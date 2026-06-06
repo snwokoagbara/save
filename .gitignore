@@ -1,0 +1,19 @@
+.DS_Store
+
+# Xcode and Swift build output
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Local dependency/cache output
+.env
+.env.*
+!.env.example
+
+# Generated local artifacts
+*.log
+coverage/
