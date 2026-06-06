@@ -35,7 +35,12 @@ struct ClaimPacketDocumentBuilder {
     }
 
     private static func slug(_ value: String) -> String {
-        let scalars = value.lowercased().unicodeScalars.map { scalar in
+        let separatedWords = value.replacingOccurrences(
+            of: "([a-z0-9])([A-Z])",
+            with: "$1-$2",
+            options: .regularExpression
+        )
+        let scalars = separatedWords.lowercased().unicodeScalars.map { scalar in
             CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
         }
         let collapsed = String(scalars).split(separator: "-").joined(separator: "-")

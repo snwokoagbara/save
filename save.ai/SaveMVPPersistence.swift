@@ -97,30 +97,193 @@ protocol SaveMVPRemoteProgressSyncing {
 struct SupabaseSaveMVPConfiguration: Equatable {
     let projectURL: URL
     let publishableKey: String
-    let accessToken: String
 
     init?(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         guard let projectURLString = environment["SAVE_SUPABASE_URL"],
               let projectURL = URL(string: projectURLString),
-              let publishableKey = environment["SAVE_SUPABASE_PUBLISHABLE_KEY"],
-              let accessToken = environment["SAVE_SUPABASE_ACCESS_TOKEN"] else {
+              let publishableKey = environment["SAVE_SUPABASE_PUBLISHABLE_KEY"] else {
             return nil
         }
 
         self.init(
             projectURL: projectURL,
-            publishableKey: publishableKey,
-            accessToken: accessToken
+            publishableKey: publishableKey
         )
     }
 
-    init(projectURL: URL, publishableKey: String, accessToken: String) {
+    init(projectURL: URL, publishableKey: String) {
         self.projectURL = projectURL
         self.publishableKey = publishableKey
-        self.accessToken = accessToken
     }
+}
+
+struct SupabaseAuthSession: Codable, Equatable {
+    let userID: UUID
+    let accessToken: String
+    let refreshToken: String?
+    let expiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case userID
+        case accessToken
+        case refreshToken
+        case expiresAt
+    }
+
+    func isUsable(now: Date = Date()) -> Bool {
+        guard let expiresAt else {
+            return true
+        }
+
+        return expiresAt > now
+    }
+}
+
+protocol SupabaseAuthSessionStoring {
+    func load() -> SupabaseAuthSession?
+    func save(_ session: SupabaseAuthSession)
+    func clear()
+}
+
+struct UserDefaultsSupabaseAuthSessionStore: SupabaseAuthSessionStoring {
+    private let key: String
+    private let userDefaults: UserDefaults
+
+    init(
+        key: String = "save.supabase.auth.session",
+        userDefaults: UserDefaults = .standard
+    ) {
+        self.key = key
+        self.userDefaults = userDefaults
+    }
+
+    func load() -> SupabaseAuthSession? {
+        guard let data = userDefaults.data(forKey: key) else {
+            return nil
+        }
+
+        return try? JSONDecoder.saveMVP.decode(SupabaseAuthSession.self, from: data)
+    }
+
+    func save(_ session: SupabaseAuthSession) {
+        guard let data = try? JSONEncoder.saveMVP.encode(session) else {
+            return
+        }
+
+        userDefaults.set(data, forKey: key)
+    }
+
+    func clear() {
+        userDefaults.removeObject(forKey: key)
+    }
+}
+
+final class InMemorySupabaseAuthSessionStore: SupabaseAuthSessionStoring {
+    private var session: SupabaseAuthSession?
+
+    init(session: SupabaseAuthSession? = nil) {
+        self.session = session
+    }
+
+    func load() -> SupabaseAuthSession? {
+        session
+    }
+
+    func save(_ session: SupabaseAuthSession) {
+        self.session = session
+    }
+
+    func clear() {
+        session = nil
+    }
+}
+
+protocol SupabaseAuthHTTPClient {
+    func data(for request: URLRequest) async throws -> Data
+}
+
+struct URLSessionSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
+    func data(for request: URLRequest) async throws -> Data {
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return data
+    }
+}
+
+struct SupabaseRESTAuthClient {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let httpClient: SupabaseAuthHTTPClient
+    private let now: () -> Date
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient(),
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.configuration = configuration
+        self.httpClient = httpClient
+        self.now = now
+    }
+
+    func signIn(email: String, password: String) async throws -> SupabaseAuthSession {
+        var components = URLComponents(
+            url: configuration.projectURL
+                .appendingPathComponent("auth")
+                .appendingPathComponent("v1")
+                .appendingPathComponent("token"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "grant_type", value: "password")]
+
+        guard let url = components?.url else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder.saveMVP.encode(PasswordSignInPayload(email: email, password: password))
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let data = try await httpClient.data(for: request)
+        let response = try JSONDecoder.saveMVP.decode(PasswordSignInResponse.self, from: data)
+        let expiresAt = response.expiresIn.map { now().addingTimeInterval(TimeInterval($0)) }
+
+        return SupabaseAuthSession(
+            userID: response.user.id,
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expiresAt: expiresAt
+        )
+    }
+
+    private struct PasswordSignInPayload: Encodable {
+        let email: String
+        let password: String
+    }
+
+    private struct PasswordSignInResponse: Decodable {
+        let accessToken: String
+        let refreshToken: String?
+        let expiresIn: Int?
+        let user: User
+
+        enum CodingKeys: String, CodingKey {
+            case accessToken = "access_token"
+            case refreshToken = "refresh_token"
+            case expiresIn = "expires_in"
+            case user
+        }
+
+        struct User: Decodable {
+            let id: UUID
+        }
+    }
+}
+
+enum SupabaseAuthError: Error {
+    case invalidURL
 }
 
 protocol SupabaseHTTPClient {
@@ -135,13 +298,16 @@ struct URLSessionSupabaseHTTPClient: SupabaseHTTPClient {
 
 struct SupabaseRESTSaveMVPProgressSyncer: SaveMVPRemoteProgressSyncing {
     private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
     private let httpClient: SupabaseHTTPClient
 
     init(
         configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
         httpClient: SupabaseHTTPClient = URLSessionSupabaseHTTPClient()
     ) {
         self.configuration = configuration
+        self.session = session
         self.httpClient = httpClient
     }
 
@@ -167,7 +333,7 @@ struct SupabaseRESTSaveMVPProgressSyncer: SaveMVPRemoteProgressSyncing {
         request.httpMethod = "POST"
         request.httpBody = body
         request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(configuration.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
         return request
@@ -272,19 +438,26 @@ final class InMemorySaveMVPProgressStore: SaveMVPProgressStoring {
 
 enum SaveMVPProgressStoreFactory {
     static func make(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sessionStore: SupabaseAuthSessionStoring = UserDefaultsSupabaseAuthSessionStore(),
+        progressHTTPClient: SupabaseHTTPClient = URLSessionSupabaseHTTPClient(),
+        now: Date = Date()
     ) -> SaveMVPProgressStoring {
         let localStore = UserDefaultsSaveMVPProgressStore()
         guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
-              let userIDString = environment["SAVE_MVP_USER_ID"],
-              let userID = UUID(uuidString: userIDString) else {
+              let session = sessionStore.load(),
+              session.isUsable(now: now) else {
             return localStore
         }
 
         return SyncingSaveMVPProgressStore(
             localStore: localStore,
-            remoteSyncer: SupabaseRESTSaveMVPProgressSyncer(configuration: configuration),
-            userID: userID
+            remoteSyncer: SupabaseRESTSaveMVPProgressSyncer(
+                configuration: configuration,
+                session: session,
+                httpClient: progressHTTPClient
+            ),
+            userID: session.userID
         )
     }
 }

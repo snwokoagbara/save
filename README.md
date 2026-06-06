@@ -40,11 +40,9 @@ xcodebuild test \
 
 Apply the schema draft in `supabase/save_v1_schema.sql` to a Supabase project. The schema enables RLS for user-owned rows, creates private storage buckets, and grants authenticated access to the V1 tables.
 
-For local runs, copy `.env.example` to `.env` and fill in project values. The iOS app stays local-only unless all of these values are present:
+For local runs, copy `.env.example` to `.env` and fill in project values. The iOS app stays local-only unless the Supabase project values are present and a user session has been stored by the Auth client:
 
 - `SAVE_SUPABASE_URL`
 - `SAVE_SUPABASE_PUBLISHABLE_KEY`
-- `SAVE_SUPABASE_ACCESS_TOKEN`
-- `SAVE_MVP_USER_ID`
 
-Do not put `service_role` or secret keys in iOS app configuration.
+Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app configuration.

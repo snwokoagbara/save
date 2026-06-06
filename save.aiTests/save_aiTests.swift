@@ -15,7 +15,7 @@ struct save_aiTests {
         let summary = DemoData.claimSummary
 
         #expect(summary.totalClaimable == 734.18)
-        #expect(summary.readyClaimCount == 2)
+        #expect(summary.readyClaimCount == 3)
         #expect(summary.needsReviewCount == 1)
     }
 
@@ -266,8 +266,13 @@ struct save_aiTests {
         let syncer = SupabaseRESTSaveMVPProgressSyncer(
             configuration: SupabaseSaveMVPConfiguration(
                 projectURL: URL(string: "https://example.supabase.co")!,
-                publishableKey: "publishable-key",
-                accessToken: "user-access-token"
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
             ),
             httpClient: client
         )
@@ -297,6 +302,87 @@ struct save_aiTests {
         #expect(json.contains("\"user_id\""))
         #expect(json.contains("00000000-0000-0000-0000-000000000789"))
         #expect(json.contains("\"hasCompletedOnboarding\":true"))
+    }
+
+    @Test func supabasePasswordAuthClientBuildsTokenRequestAndDecodesSession() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000abc")!
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "access_token": "access-token",
+              "refresh_token": "refresh-token",
+              "expires_in": 3600,
+              "user": { "id": "\(userID.uuidString)" }
+            }
+            """.data(using: .utf8)!
+        )
+        let authClient = SupabaseRESTAuthClient(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            httpClient: client,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+
+        let session = try await authClient.signIn(email: "kai@example.com", password: "correct-password")
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/auth/v1/token?grant_type=password")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let body = try #require(request.httpBody)
+        let json = try #require(String(data: body, encoding: .utf8))
+        #expect(json.contains("\"email\":\"kai@example.com\""))
+        #expect(json.contains("\"password\":\"correct-password\""))
+        #expect(session == SupabaseAuthSession(
+            userID: userID,
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        ))
+    }
+
+    @Test func authSessionStoreRoundTripsSession() async throws {
+        let store = InMemorySupabaseAuthSessionStore()
+        let session = SupabaseAuthSession(
+            userID: UUID(uuidString: "00000000-0000-0000-0000-000000000def")!,
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        )
+
+        store.save(session)
+
+        #expect(store.load() == session)
+    }
+
+    @Test func progressStoreFactoryUsesStoredSupabaseSessionWhenConfigured() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000fed")!
+        let progressClient = CapturingSupabaseHTTPClient()
+        let sessionStore = InMemorySupabaseAuthSessionStore(session: SupabaseAuthSession(
+            userID: userID,
+            accessToken: "stored-access-token",
+            refreshToken: "stored-refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        ))
+        let store = SaveMVPProgressStoreFactory.make(
+            environment: [
+                "SAVE_SUPABASE_URL": "https://example.supabase.co",
+                "SAVE_SUPABASE_PUBLISHABLE_KEY": "publishable-key"
+            ],
+            sessionStore: sessionStore,
+            progressHTTPClient: progressClient
+        )
+
+        store.save(SaveMVPPersistedState(hasCompletedOnboarding: true))
+
+        let request = try #require(progressClient.requests.first)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer stored-access-token")
+        let body = try #require(request.httpBody)
+        let json = try #require(String(data: body, encoding: .utf8))
+        #expect(json.contains(userID.uuidString))
     }
 
     @Test func progressStoreFactoryUsesLocalStoreWhenSupabaseConfigIsMissing() async throws {
@@ -379,9 +465,9 @@ struct save_aiTests {
 
         let restored = SaveMVPState(persisted: state.persisted)
 
-        #expect(restored.summary.needsReviewCount == 1)
-        #expect(restored.summary.totalClaimable == 8.99)
-        #expect(restored.taxExport.totalMedicalExpenses == 8.99)
+        #expect(restored.summary.needsReviewCount == 2)
+        #expect(restored.summary.totalClaimable == 743.17)
+        #expect(restored.taxExport.totalMedicalExpenses == 943.17)
     }
 
     private static let fixtureReceiptOCR = """
@@ -406,5 +492,19 @@ private final class CapturingSupabaseHTTPClient: SupabaseHTTPClient {
 
     func send(_ request: URLRequest) {
         requests.append(request)
+    }
+}
+
+private final class CapturingSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
+    private(set) var requests: [URLRequest] = []
+    let responseData: Data
+
+    init(responseData: Data) {
+        self.responseData = responseData
+    }
+
+    func data(for request: URLRequest) async throws -> Data {
+        requests.append(request)
+        return responseData
     }
 }
