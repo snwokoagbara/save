@@ -204,6 +204,10 @@ protocol SupabaseAuthHTTPClient {
     func data(for request: URLRequest) async throws -> Data
 }
 
+protocol SupabaseAuthSigningIn {
+    func signIn(email: String, password: String) async throws -> SupabaseAuthSession
+}
+
 struct URLSessionSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
     func data(for request: URLRequest) async throws -> Data {
         let (data, _) = try await URLSession.shared.data(for: request)
@@ -211,7 +215,7 @@ struct URLSessionSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
     }
 }
 
-struct SupabaseRESTAuthClient {
+struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
     private let configuration: SupabaseSaveMVPConfiguration
     private let httpClient: SupabaseAuthHTTPClient
     private let now: () -> Date
@@ -284,6 +288,41 @@ struct SupabaseRESTAuthClient {
 
 enum SupabaseAuthError: Error {
     case invalidURL
+}
+
+struct SaveMVPSignInController {
+    private let authClient: SupabaseAuthSigningIn
+    private let sessionStore: SupabaseAuthSessionStoring
+
+    init(
+        authClient: SupabaseAuthSigningIn,
+        sessionStore: SupabaseAuthSessionStoring
+    ) {
+        self.authClient = authClient
+        self.sessionStore = sessionStore
+    }
+
+    func signIn(email: String, password: String) async throws -> SupabaseAuthSession {
+        let session = try await authClient.signIn(email: email, password: password)
+        sessionStore.save(session)
+        return session
+    }
+}
+
+enum SaveMVPSignInControllerFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sessionStore: SupabaseAuthSessionStoring = UserDefaultsSupabaseAuthSessionStore()
+    ) -> SaveMVPSignInController? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment) else {
+            return nil
+        }
+
+        return SaveMVPSignInController(
+            authClient: SupabaseRESTAuthClient(configuration: configuration),
+            sessionStore: sessionStore
+        )
+    }
 }
 
 protocol SupabaseHTTPClient {

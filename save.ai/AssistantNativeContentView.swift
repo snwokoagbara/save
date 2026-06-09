@@ -3,19 +3,53 @@ import SwiftUI
 import UIKit
 
 struct AssistantNativeContentView: View {
-    private let progressStore: SaveMVPProgressStoring
+    private let progressStoreFactory: () -> SaveMVPProgressStoring
+    private let signInController: SaveMVPSignInController?
+    @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
+    @State private var authSession: SupabaseAuthSession?
+    @State private var isShowingSignIn = false
     @State private var isShowingReceiptIntake = false
     @State private var receiptReviewRoute: ReceiptReviewRoute?
     @State private var claimPacketRoute: ClaimPacketRoute?
     @State private var isShowingTaxExport = false
 
-    init(progressStore: SaveMVPProgressStoring = UserDefaultsSaveMVPProgressStore()) {
-        self.progressStore = progressStore
+    init(
+        progressStore: SaveMVPProgressStoring = UserDefaultsSaveMVPProgressStore(),
+        progressStoreFactory: (() -> SaveMVPProgressStoring)? = nil,
+        signInController: SaveMVPSignInController? = nil,
+        authSession: SupabaseAuthSession? = nil
+    ) {
+        self.progressStoreFactory = progressStoreFactory ?? { progressStore }
+        self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
         }
+        _progressStore = State(initialValue: progressStore)
         _state = State(initialValue: SaveMVPState(persisted: progressStore.load()))
+        _authSession = State(initialValue: authSession)
+    }
+
+    init(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sessionStore: SupabaseAuthSessionStoring = UserDefaultsSupabaseAuthSessionStore()
+    ) {
+        let makeProgressStore = {
+            SaveMVPProgressStoreFactory.make(
+                environment: environment,
+                sessionStore: sessionStore
+            )
+        }
+        let progressStore = makeProgressStore()
+        self.init(
+            progressStore: progressStore,
+            progressStoreFactory: makeProgressStore,
+            signInController: SaveMVPSignInControllerFactory.make(
+                environment: environment,
+                sessionStore: sessionStore
+            ),
+            authSession: sessionStore.load()
+        )
     }
 
     var body: some View {
@@ -43,7 +77,7 @@ struct AssistantNativeContentView: View {
             .background(AssistantTheme.background)
             .navigationTitle("SAVE")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         updateState {
                             $0.resetProgress()
@@ -52,7 +86,24 @@ struct AssistantNativeContentView: View {
                         Image(systemName: "person.crop.circle")
                     }
                     .accessibilityLabel("Reset progress")
+
+                    if signInController != nil {
+                        Button {
+                            isShowingSignIn = true
+                        } label: {
+                            Image(systemName: authSession == nil ? "person.crop.circle.badge.plus" : "person.crop.circle.badge.checkmark")
+                        }
+                        .accessibilityLabel(authSession == nil ? "Sign in" : "Signed in")
+                    }
                 }
+            }
+        }
+        .sheet(isPresented: $isShowingSignIn) {
+            if let signInController {
+                SupabaseSignInSheet(controller: signInController) { session in
+                    handleSignedIn(session)
+                }
+                .presentationDetents([.medium])
             }
         }
     }
@@ -156,6 +207,13 @@ struct AssistantNativeContentView: View {
         mutate(&state)
         progressStore.save(state.persisted)
     }
+
+    private func handleSignedIn(_ session: SupabaseAuthSession) {
+        authSession = session
+        progressStore = progressStoreFactory()
+        progressStore.save(state.persisted)
+        isShowingSignIn = false
+    }
 }
 
 private struct ReceiptReviewRoute: Identifiable {
@@ -171,6 +229,76 @@ private struct ClaimPacketRoute: Identifiable {
 
     var id: UUID {
         packetID
+    }
+}
+
+private struct SupabaseSignInSheet: View {
+    let controller: SaveMVPSignInController
+    let onSignedIn: (SupabaseAuthSession) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var email = ""
+    @State private var password = ""
+    @State private var errorMessage: String?
+    @State private var isSigningIn = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Email", text: $email)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .autocorrectionDisabled()
+                    SecureField("Password", text: $password)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Sign in")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSigningIn ? "Signing in" : "Sign in") {
+                        signIn()
+                    }
+                    .disabled(email.isEmpty || password.isEmpty || isSigningIn)
+                }
+            }
+        }
+    }
+
+    private func signIn() {
+        errorMessage = nil
+        isSigningIn = true
+
+        Task {
+            do {
+                let session = try await controller.signIn(
+                    email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                    password: password
+                )
+                await MainActor.run {
+                    isSigningIn = false
+                    onSignedIn(session)
+                }
+            } catch {
+                await MainActor.run {
+                    isSigningIn = false
+                    errorMessage = "Sign in failed. Check the email and password."
+                }
+            }
+        }
     }
 }
 

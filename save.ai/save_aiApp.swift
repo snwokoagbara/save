@@ -11,7 +11,7 @@ import SwiftUI
 struct save_aiApp: App {
     var body: some Scene {
         WindowGroup {
-            AssistantNativeContentView(progressStore: SaveMVPProgressStoreFactory.make())
+            AssistantNativeContentView(environment: ProcessInfo.processInfo.environment)
         }
     }
 }

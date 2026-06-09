@@ -358,6 +358,43 @@ struct save_aiTests {
         #expect(store.load() == session)
     }
 
+    @Test func signInControllerStoresReturnedSession() async throws {
+        let session = SupabaseAuthSession(
+            userID: UUID(uuidString: "00000000-0000-0000-0000-000000000111")!,
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        )
+        let authClient = CapturingAuthSigningIn(session: session)
+        let sessionStore = InMemorySupabaseAuthSessionStore()
+        let controller = SaveMVPSignInController(
+            authClient: authClient,
+            sessionStore: sessionStore
+        )
+
+        let signedInSession = try await controller.signIn(
+            email: "kai@example.com",
+            password: "correct-password"
+        )
+
+        #expect(signedInSession == session)
+        #expect(sessionStore.load() == session)
+        #expect(authClient.requests == [
+            CapturingAuthSigningIn.Request(
+                email: "kai@example.com",
+                password: "correct-password"
+            )
+        ])
+    }
+
+    @Test func signInControllerFactoryRequiresSupabaseConfiguration() async throws {
+        #expect(SaveMVPSignInControllerFactory.make(environment: [:]) == nil)
+        #expect(SaveMVPSignInControllerFactory.make(environment: [
+            "SAVE_SUPABASE_URL": "https://example.supabase.co",
+            "SAVE_SUPABASE_PUBLISHABLE_KEY": "publishable-key"
+        ]) != nil)
+    }
+
     @Test func progressStoreFactoryUsesStoredSupabaseSessionWhenConfigured() async throws {
         let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000fed")!
         let progressClient = CapturingSupabaseHTTPClient()
@@ -477,6 +514,25 @@ struct save_aiTests {
     Saline Solution 23.48
     Total 32.47
     """
+}
+
+private final class CapturingAuthSigningIn: SupabaseAuthSigningIn {
+    struct Request: Equatable {
+        let email: String
+        let password: String
+    }
+
+    private(set) var requests: [Request] = []
+    let session: SupabaseAuthSession
+
+    init(session: SupabaseAuthSession) {
+        self.session = session
+    }
+
+    func signIn(email: String, password: String) async throws -> SupabaseAuthSession {
+        requests.append(Request(email: email, password: password))
+        return session
+    }
 }
 
 private final class CapturingSaveMVPRemoteProgressSyncer: SaveMVPRemoteProgressSyncing {

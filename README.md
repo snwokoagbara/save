@@ -45,4 +45,6 @@ For local runs, copy `.env.example` to `.env` and fill in project values. The iO
 - `SAVE_SUPABASE_URL`
 - `SAVE_SUPABASE_PUBLISHABLE_KEY`
 
+When those values are present in the Xcode scheme environment, the app shows a sign-in control in the top bar. A successful sign-in stores the user session locally and immediately syncs the current progress snapshot to `mvp_progress_snapshots`.
+
 Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app configuration.
