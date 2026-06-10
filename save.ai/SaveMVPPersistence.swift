@@ -141,6 +141,11 @@ struct SupabaseAuthSession: Codable, Equatable {
     }
 }
 
+struct SupabaseAuthSignUpResult: Equatable {
+    let userID: UUID
+    let session: SupabaseAuthSession?
+}
+
 protocol SupabaseAuthSessionStoring {
     func load() -> SupabaseAuthSession?
     func save(_ session: SupabaseAuthSession)
@@ -206,6 +211,7 @@ protocol SupabaseAuthHTTPClient {
 
 protocol SupabaseAuthSigningIn {
     func signIn(email: String, password: String) async throws -> SupabaseAuthSession
+    func signUp(email: String, password: String) async throws -> SupabaseAuthSignUpResult
 }
 
 struct URLSessionSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
@@ -262,6 +268,34 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
         )
     }
 
+    func signUp(email: String, password: String) async throws -> SupabaseAuthSignUpResult {
+        let url = configuration.projectURL
+            .appendingPathComponent("auth")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("signup")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder.saveMVP.encode(PasswordSignInPayload(email: email, password: password))
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let data = try await httpClient.data(for: request)
+        let response = try JSONDecoder.saveMVP.decode(PasswordSignUpResponse.self, from: data)
+        let userID = try response.resolvedUserID()
+        let expiresAt = response.expiresIn.map { now().addingTimeInterval(TimeInterval($0)) }
+        let session = response.accessToken.map {
+            SupabaseAuthSession(
+                userID: userID,
+                accessToken: $0,
+                refreshToken: response.refreshToken,
+                expiresAt: expiresAt
+            )
+        }
+
+        return SupabaseAuthSignUpResult(userID: userID, session: session)
+    }
+
     private struct PasswordSignInPayload: Encodable {
         let email: String
         let password: String
@@ -284,10 +318,43 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
             let id: UUID
         }
     }
+
+    private struct PasswordSignUpResponse: Decodable {
+        let id: UUID?
+        let accessToken: String?
+        let refreshToken: String?
+        let expiresIn: Int?
+        let user: User?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case accessToken = "access_token"
+            case refreshToken = "refresh_token"
+            case expiresIn = "expires_in"
+            case user
+        }
+
+        func resolvedUserID() throws -> UUID {
+            if let user {
+                return user.id
+            }
+
+            if let id {
+                return id
+            }
+
+            throw SupabaseAuthError.missingUserID
+        }
+
+        struct User: Decodable {
+            let id: UUID
+        }
+    }
 }
 
 enum SupabaseAuthError: Error {
     case invalidURL
+    case missingUserID
 }
 
 struct SaveMVPSignInController {
@@ -306,6 +373,14 @@ struct SaveMVPSignInController {
         let session = try await authClient.signIn(email: email, password: password)
         sessionStore.save(session)
         return session
+    }
+
+    func signUp(email: String, password: String) async throws -> SupabaseAuthSignUpResult {
+        let result = try await authClient.signUp(email: email, password: password)
+        if let session = result.session {
+            sessionStore.save(session)
+        }
+        return result
     }
 }
 

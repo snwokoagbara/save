@@ -240,11 +240,21 @@ private struct SupabaseSignInSheet: View {
     @State private var email = ""
     @State private var password = ""
     @State private var errorMessage: String?
+    @State private var successMessage: String?
     @State private var isSigningIn = false
+    @State private var isCreatingAccount = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Auth mode", selection: $isCreatingAccount) {
+                        Text("Sign in").tag(false)
+                        Text("Create account").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Section {
                     TextField("Email", text: $email)
                         .textInputAutocapitalization(.never)
@@ -260,8 +270,16 @@ private struct SupabaseSignInSheet: View {
                             .foregroundStyle(.red)
                     }
                 }
+
+                if let successMessage {
+                    Section {
+                        Text(successMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            .navigationTitle("Sign in")
+            .navigationTitle(isCreatingAccount ? "Create account" : "Sign in")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -269,8 +287,8 @@ private struct SupabaseSignInSheet: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSigningIn ? "Signing in" : "Sign in") {
-                        signIn()
+                    Button(actionTitle) {
+                        authenticate()
                     }
                     .disabled(email.isEmpty || password.isEmpty || isSigningIn)
                 }
@@ -278,16 +296,36 @@ private struct SupabaseSignInSheet: View {
         }
     }
 
-    private func signIn() {
+    private var actionTitle: String {
+        if isSigningIn {
+            return isCreatingAccount ? "Creating" : "Signing in"
+        }
+
+        return isCreatingAccount ? "Create" : "Sign in"
+    }
+
+    private func authenticate() {
         errorMessage = nil
+        successMessage = nil
         isSigningIn = true
 
         Task {
             do {
-                let session = try await controller.signIn(
-                    email: email.trimmingCharacters(in: .whitespacesAndNewlines),
-                    password: password
-                )
+                let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+                if isCreatingAccount {
+                    let result = try await controller.signUp(email: trimmedEmail, password: password)
+                    await MainActor.run {
+                        isSigningIn = false
+                        if let session = result.session {
+                            onSignedIn(session)
+                        } else {
+                            successMessage = "Check your email to confirm the account, then sign in."
+                        }
+                    }
+                    return
+                }
+
+                let session = try await controller.signIn(email: trimmedEmail, password: password)
                 await MainActor.run {
                     isSigningIn = false
                     onSignedIn(session)
@@ -295,7 +333,9 @@ private struct SupabaseSignInSheet: View {
             } catch {
                 await MainActor.run {
                     isSigningIn = false
-                    errorMessage = "Sign in failed. Check the email and password."
+                    errorMessage = isCreatingAccount
+                        ? "Account creation failed. Check the email and password."
+                        : "Sign in failed. Check the email and password."
                 }
             }
         }

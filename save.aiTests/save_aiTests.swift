@@ -344,6 +344,72 @@ struct save_aiTests {
         ))
     }
 
+    @Test func supabasePasswordAuthClientBuildsSignupRequestAndDecodesPendingUser() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000aaa")!
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "id": "\(userID.uuidString)",
+              "email": "kai@example.com"
+            }
+            """.data(using: .utf8)!
+        )
+        let authClient = SupabaseRESTAuthClient(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            httpClient: client
+        )
+
+        let result = try await authClient.signUp(email: "kai@example.com", password: "new-password")
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/auth/v1/signup")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let body = try #require(request.httpBody)
+        let json = try #require(String(data: body, encoding: .utf8))
+        #expect(json.contains("\"email\":\"kai@example.com\""))
+        #expect(json.contains("\"password\":\"new-password\""))
+        #expect(result == SupabaseAuthSignUpResult(userID: userID, session: nil))
+    }
+
+    @Test func supabasePasswordAuthClientStoresSignupSessionWhenReturned() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000bbb")!
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "access_token": "signup-access-token",
+              "refresh_token": "signup-refresh-token",
+              "expires_in": 3600,
+              "user": { "id": "\(userID.uuidString)" }
+            }
+            """.data(using: .utf8)!
+        )
+        let authClient = SupabaseRESTAuthClient(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            httpClient: client,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+
+        let result = try await authClient.signUp(email: "kai@example.com", password: "new-password")
+
+        #expect(result == SupabaseAuthSignUpResult(
+            userID: userID,
+            session: SupabaseAuthSession(
+                userID: userID,
+                accessToken: "signup-access-token",
+                refreshToken: "signup-refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            )
+        ))
+    }
+
     @Test func authSessionStoreRoundTripsSession() async throws {
         let store = InMemorySupabaseAuthSessionStore()
         let session = SupabaseAuthSession(
@@ -383,6 +449,32 @@ struct save_aiTests {
             CapturingAuthSigningIn.Request(
                 email: "kai@example.com",
                 password: "correct-password"
+            )
+        ])
+    }
+
+    @Test func signInControllerStoresSignupSessionOnlyWhenReturned() async throws {
+        let session = SupabaseAuthSession(
+            userID: UUID(uuidString: "00000000-0000-0000-0000-000000000222")!,
+            accessToken: "signup-access-token",
+            refreshToken: "signup-refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        )
+        let authClient = CapturingAuthSigningIn(session: session)
+        let sessionStore = InMemorySupabaseAuthSessionStore()
+        let controller = SaveMVPSignInController(
+            authClient: authClient,
+            sessionStore: sessionStore
+        )
+
+        let result = try await controller.signUp(email: "kai@example.com", password: "new-password")
+
+        #expect(result == SupabaseAuthSignUpResult(userID: session.userID, session: session))
+        #expect(sessionStore.load() == session)
+        #expect(authClient.signUpRequests == [
+            CapturingAuthSigningIn.Request(
+                email: "kai@example.com",
+                password: "new-password"
             )
         ])
     }
@@ -523,6 +615,7 @@ private final class CapturingAuthSigningIn: SupabaseAuthSigningIn {
     }
 
     private(set) var requests: [Request] = []
+    private(set) var signUpRequests: [Request] = []
     let session: SupabaseAuthSession
 
     init(session: SupabaseAuthSession) {
@@ -532,6 +625,11 @@ private final class CapturingAuthSigningIn: SupabaseAuthSigningIn {
     func signIn(email: String, password: String) async throws -> SupabaseAuthSession {
         requests.append(Request(email: email, password: password))
         return session
+    }
+
+    func signUp(email: String, password: String) async throws -> SupabaseAuthSignUpResult {
+        signUpRequests.append(Request(email: email, password: password))
+        return SupabaseAuthSignUpResult(userID: session.userID, session: session)
     }
 }
 
