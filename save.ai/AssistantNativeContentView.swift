@@ -59,6 +59,14 @@ struct AssistantNativeContentView: View {
                     kaiHome
                 } else {
                     OnboardingView(
+                        authSession: authSession,
+                        isSupabaseConfigured: signInController != nil,
+                        showSignIn: {
+                            isShowingSignIn = true
+                        },
+                        signOut: {
+                            signOut()
+                        },
                         startDemo: {
                             updateState {
                                 $0.completeOnboarding()
@@ -371,6 +379,10 @@ private struct SupabaseSignInSheet: View {
 }
 
 private struct OnboardingView: View {
+    let authSession: SupabaseAuthSession?
+    let isSupabaseConfigured: Bool
+    let showSignIn: () -> Void
+    let signOut: () -> Void
     let startDemo: () -> Void
     let startReceiptOnly: () -> Void
 
@@ -396,6 +408,13 @@ private struct OnboardingView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            AccountStatusView(
+                authSession: authSession,
+                isSupabaseConfigured: isSupabaseConfigured,
+                showSignIn: showSignIn,
+                signOut: signOut
+            )
 
             VStack(alignment: .leading, spacing: 12) {
                 OnboardingPoint(symbol: "receipt.fill", title: "Receipts", detail: "Camera and gallery intake come first.")
