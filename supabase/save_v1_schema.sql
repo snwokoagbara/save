@@ -6,6 +6,7 @@ create extension if not exists pgcrypto;
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
+set search_path = public, pg_temp
 as $$
 begin
   new.updated_at = now();
@@ -235,10 +236,18 @@ create table if not exists public.audit_events (
 create index if not exists idx_source_connections_user_id on public.source_connections(user_id);
 create index if not exists idx_receipts_user_id on public.receipts(user_id);
 create index if not exists idx_receipts_status on public.receipts(status);
+create index if not exists idx_receipt_files_user_id on public.receipt_files(user_id);
 create index if not exists idx_receipt_files_receipt_id on public.receipt_files(receipt_id);
+create index if not exists idx_receipt_line_items_user_id on public.receipt_line_items(user_id);
 create index if not exists idx_receipt_line_items_receipt_id on public.receipt_line_items(receipt_id);
+create index if not exists idx_classification_runs_user_id on public.classification_runs(user_id);
+create index if not exists idx_classification_runs_receipt_id on public.classification_runs(receipt_id);
 create index if not exists idx_claim_packets_user_id on public.claim_packets(user_id);
+create index if not exists idx_claim_packets_administrator_template_id on public.claim_packets(administrator_template_id);
+create index if not exists idx_claim_packet_items_user_id on public.claim_packet_items(user_id);
 create index if not exists idx_claim_packet_items_packet_id on public.claim_packet_items(claim_packet_id);
+create index if not exists idx_claim_packet_items_receipt_line_item_id on public.claim_packet_items(receipt_line_item_id);
+create index if not exists idx_claim_packet_events_user_id on public.claim_packet_events(user_id);
 create index if not exists idx_claim_packet_events_packet_id on public.claim_packet_events(claim_packet_id);
 create index if not exists idx_tax_exports_user_year on public.tax_exports(user_id, tax_year);
 create index if not exists idx_audit_events_user_id on public.audit_events(user_id);
@@ -280,10 +289,10 @@ begin
     execute format('drop policy if exists "%1$s_insert_own" on public.%1$I', table_name);
     execute format('drop policy if exists "%1$s_update_own" on public.%1$I', table_name);
     execute format('drop policy if exists "%1$s_delete_own" on public.%1$I', table_name);
-    execute format('create policy "%1$s_select_own" on public.%1$I for select to authenticated using (auth.uid() = user_id)', table_name);
-    execute format('create policy "%1$s_insert_own" on public.%1$I for insert to authenticated with check (auth.uid() = user_id)', table_name);
-    execute format('create policy "%1$s_update_own" on public.%1$I for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id)', table_name);
-    execute format('create policy "%1$s_delete_own" on public.%1$I for delete to authenticated using (auth.uid() = user_id)', table_name);
+    execute format('create policy "%1$s_select_own" on public.%1$I for select to authenticated using ((select auth.uid()) = user_id)', table_name);
+    execute format('create policy "%1$s_insert_own" on public.%1$I for insert to authenticated with check ((select auth.uid()) = user_id)', table_name);
+    execute format('create policy "%1$s_update_own" on public.%1$I for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id)', table_name);
+    execute format('create policy "%1$s_delete_own" on public.%1$I for delete to authenticated using ((select auth.uid()) = user_id)', table_name);
   end loop;
 end $$;
 
@@ -368,7 +377,7 @@ for insert
 to authenticated
 with check (
   bucket_id = 'receipt-files'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "receipt_files_select_own_path" on storage.objects;
@@ -378,7 +387,7 @@ for select
 to authenticated
 using (
   bucket_id = 'receipt-files'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "receipt_files_update_own_path" on storage.objects;
@@ -388,11 +397,11 @@ for update
 to authenticated
 using (
   bucket_id = 'receipt-files'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 )
 with check (
   bucket_id = 'receipt-files'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "claim_packets_insert_own_path" on storage.objects;
@@ -402,7 +411,7 @@ for insert
 to authenticated
 with check (
   bucket_id = 'claim-packets'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "claim_packets_select_own_path" on storage.objects;
@@ -412,7 +421,7 @@ for select
 to authenticated
 using (
   bucket_id = 'claim-packets'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "claim_packets_update_own_path" on storage.objects;
@@ -422,11 +431,11 @@ for update
 to authenticated
 using (
   bucket_id = 'claim-packets'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 )
 with check (
   bucket_id = 'claim-packets'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "tax_exports_insert_own_path" on storage.objects;
@@ -436,7 +445,7 @@ for insert
 to authenticated
 with check (
   bucket_id = 'tax-exports'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "tax_exports_select_own_path" on storage.objects;
@@ -446,7 +455,7 @@ for select
 to authenticated
 using (
   bucket_id = 'tax-exports'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 drop policy if exists "tax_exports_update_own_path" on storage.objects;
@@ -456,11 +465,11 @@ for update
 to authenticated
 using (
   bucket_id = 'tax-exports'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 )
 with check (
   bucket_id = 'tax-exports'
-  and auth.uid()::text = (storage.foldername(name))[1]
+  and (select auth.uid())::text = (storage.foldername(name))[1]
 );
 
 -- V1 security posture:
