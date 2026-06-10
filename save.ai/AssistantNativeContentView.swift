@@ -88,12 +88,23 @@ struct AssistantNativeContentView: View {
                     .accessibilityLabel("Reset progress")
 
                     if signInController != nil {
-                        Button {
-                            isShowingSignIn = true
+                        Menu {
+                            if authSession == nil {
+                                Button {
+                                    isShowingSignIn = true
+                                } label: {
+                                    Label("Sign in or create account", systemImage: "person.crop.circle.badge.plus")
+                                }
+                            } else {
+                                Button(role: .destructive) {
+                                    signOut()
+                                } label: {
+                                    Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                                }
+                            }
                         } label: {
-                            Image(systemName: authSession == nil ? "person.crop.circle.badge.plus" : "person.crop.circle.badge.checkmark")
+                            Label(authSession == nil ? "Account" : "Signed in", systemImage: authSession == nil ? "person.crop.circle.badge.plus" : "person.crop.circle.badge.checkmark")
                         }
-                        .accessibilityLabel(authSession == nil ? "Sign in" : "Signed in")
                     }
                 }
             }
@@ -116,6 +127,16 @@ struct AssistantNativeContentView: View {
                         $0.connect(source)
                     }
                 }
+                AccountStatusView(
+                    authSession: authSession,
+                    isSupabaseConfigured: signInController != nil,
+                    showSignIn: {
+                        isShowingSignIn = true
+                    },
+                    signOut: {
+                        signOut()
+                    }
+                )
                 AssistantPromptBar {
                     isShowingReceiptIntake = true
                 }
@@ -213,6 +234,13 @@ struct AssistantNativeContentView: View {
         progressStore = progressStoreFactory()
         progressStore.save(state.persisted)
         isShowingSignIn = false
+    }
+
+    private func signOut() {
+        signInController?.signOut()
+        authSession = nil
+        progressStore = UserDefaultsSaveMVPProgressStore()
+        progressStore.save(state.persisted)
     }
 }
 
@@ -486,6 +514,74 @@ private struct AssistantHero: View {
         }
 
         return "\(state.summary.readyClaimCount) claim packets found. \(state.summary.needsReviewCount) item needs your review before Kai includes it."
+    }
+}
+
+private struct AccountStatusView: View {
+    let authSession: SupabaseAuthSession?
+    let isSupabaseConfigured: Bool
+    let showSignIn: () -> Void
+    let signOut: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: iconName)
+                .font(.headline)
+                .foregroundStyle(authSession == nil ? Color.secondary : Color.teal)
+                .frame(width: 34, height: 34)
+                .background((authSession == nil ? Color.secondary : Color.teal).opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if isSupabaseConfigured {
+                Button(authSession == nil ? "Sign in" : "Sign out") {
+                    if authSession == nil {
+                        showSignIn()
+                    } else {
+                        signOut()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(authSession == nil ? .teal : .secondary)
+            }
+        }
+        .padding(14)
+        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var iconName: String {
+        if !isSupabaseConfigured {
+            return "icloud.slash"
+        }
+
+        return authSession == nil ? "person.crop.circle.badge.plus" : "checkmark.icloud.fill"
+    }
+
+    private var title: String {
+        if !isSupabaseConfigured {
+            return "Local mode"
+        }
+
+        return authSession == nil ? "Not signed in" : "Signed in"
+    }
+
+    private var detail: String {
+        if !isSupabaseConfigured {
+            return "Add Supabase environment values in the scheme to enable account sync."
+        }
+
+        return authSession == nil
+            ? "Sign in or create an account to sync progress."
+            : "Progress sync is enabled for this device."
     }
 }
 

@@ -382,6 +382,10 @@ struct SaveMVPSignInController {
         }
         return result
     }
+
+    func signOut() {
+        sessionStore.clear()
+    }
 }
 
 enum SaveMVPSignInControllerFactory {

@@ -479,6 +479,25 @@ struct save_aiTests {
         ])
     }
 
+    @Test func signInControllerSignOutClearsStoredSession() async throws {
+        let session = SupabaseAuthSession(
+            userID: UUID(uuidString: "00000000-0000-0000-0000-000000000333")!,
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        )
+        let authClient = CapturingAuthSigningIn(session: session)
+        let sessionStore = InMemorySupabaseAuthSessionStore(session: session)
+        let controller = SaveMVPSignInController(
+            authClient: authClient,
+            sessionStore: sessionStore
+        )
+
+        controller.signOut()
+
+        #expect(sessionStore.load() == nil)
+    }
+
     @Test func signInControllerFactoryRequiresSupabaseConfiguration() async throws {
         #expect(SaveMVPSignInControllerFactory.make(environment: [:]) == nil)
         #expect(SaveMVPSignInControllerFactory.make(environment: [
