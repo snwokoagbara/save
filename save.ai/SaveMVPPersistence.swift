@@ -94,6 +94,10 @@ protocol SaveMVPRemoteProgressSyncing {
     func push(_ record: SupabaseSaveMVPProgressRecord)
 }
 
+protocol SaveMVPRemoteProgressLoading {
+    func load() async throws -> SaveMVPPersistedState?
+}
+
 struct SupabaseSaveMVPConfiguration: Equatable {
     let projectURL: URL
     let publishableKey: String
@@ -414,6 +418,61 @@ struct URLSessionSupabaseHTTPClient: SupabaseHTTPClient {
     }
 }
 
+struct SupabaseRESTSaveMVPProgressLoader: SaveMVPRemoteProgressLoading {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let httpClient: SupabaseAuthHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.httpClient = httpClient
+    }
+
+    func load() async throws -> SaveMVPPersistedState? {
+        guard let request = makeRequest() else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        let data = try await httpClient.data(for: request)
+        return try JSONDecoder.saveMVP.decode([SnapshotResponse].self, from: data).first?.state
+    }
+
+    private func makeRequest() -> URLRequest? {
+        var components = URLComponents(
+            url: configuration.projectURL
+                .appendingPathComponent("rest")
+                .appendingPathComponent("v1")
+                .appendingPathComponent("mvp_progress_snapshots"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "select", value: "state"),
+            URLQueryItem(name: "user_id", value: "eq.\(session.userID.uuidString.lowercased())"),
+            URLQueryItem(name: "limit", value: "1")
+        ]
+
+        guard let url = components?.url else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private struct SnapshotResponse: Decodable {
+        let state: SaveMVPPersistedState
+    }
+}
+
 struct SupabaseRESTSaveMVPProgressSyncer: SaveMVPRemoteProgressSyncing {
     private let configuration: SupabaseSaveMVPConfiguration
     private let session: SupabaseAuthSession
@@ -576,6 +635,23 @@ enum SaveMVPProgressStoreFactory {
                 httpClient: progressHTTPClient
             ),
             userID: session.userID
+        )
+    }
+}
+
+enum SaveMVPRemoteProgressLoaderFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: SupabaseAuthSession
+    ) -> SaveMVPRemoteProgressLoading? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
+              session.isUsable() else {
+            return nil
+        }
+
+        return SupabaseRESTSaveMVPProgressLoader(
+            configuration: configuration,
+            session: session
         )
     }
 }

@@ -304,6 +304,71 @@ struct save_aiTests {
         #expect(json.contains("\"hasCompletedOnboarding\":true"))
     }
 
+    @Test func supabaseProgressLoaderBuildsAuthenticatedSnapshotRequestAndDecodesState() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000789")!
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            [
+              {
+                "state": {
+                  "hasCompletedOnboarding": true,
+                  "connectedSources": ["gmail", "bank"],
+                  "preparedFirstDraftClaim": true
+                }
+              }
+            ]
+            """.data(using: .utf8)!
+        )
+        let loader = SupabaseRESTSaveMVPProgressLoader(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: userID,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let snapshot = try await loader.load()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/rest/v1/mvp_progress_snapshots?select=state&user_id=eq.00000000-0000-0000-0000-000000000789&limit=1")
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(snapshot == SaveMVPPersistedState(
+            hasCompletedOnboarding: true,
+            connectedSources: [.gmail, .bank],
+            preparedFirstDraftClaim: true
+        ))
+    }
+
+    @Test func supabaseProgressLoaderReturnsNilWhenNoSnapshotExists() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(responseData: "[]".data(using: .utf8)!)
+        let loader = SupabaseRESTSaveMVPProgressLoader(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let snapshot = try await loader.load()
+
+        #expect(snapshot == nil)
+    }
+
     @Test func supabasePasswordAuthClientBuildsTokenRequestAndDecodesSession() async throws {
         let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000abc")!
         let client = CapturingSupabaseAuthHTTPClient(

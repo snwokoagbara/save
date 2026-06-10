@@ -4,10 +4,12 @@ import UIKit
 
 struct AssistantNativeContentView: View {
     private let progressStoreFactory: () -> SaveMVPProgressStoring
+    private let remoteProgressLoaderFactory: (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
     @State private var authSession: SupabaseAuthSession?
+    @State private var hasAttemptedRemoteProgressLoad = false
     @State private var isShowingSignIn = false
     @State private var isShowingReceiptIntake = false
     @State private var receiptReviewRoute: ReceiptReviewRoute?
@@ -17,10 +19,12 @@ struct AssistantNativeContentView: View {
     init(
         progressStore: SaveMVPProgressStoring = UserDefaultsSaveMVPProgressStore(),
         progressStoreFactory: (() -> SaveMVPProgressStoring)? = nil,
+        remoteProgressLoaderFactory: @escaping (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
         self.progressStoreFactory = progressStoreFactory ?? { progressStore }
+        self.remoteProgressLoaderFactory = remoteProgressLoaderFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
@@ -44,6 +48,12 @@ struct AssistantNativeContentView: View {
         self.init(
             progressStore: progressStore,
             progressStoreFactory: makeProgressStore,
+            remoteProgressLoaderFactory: { session in
+                SaveMVPRemoteProgressLoaderFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
             signInController: SaveMVPSignInControllerFactory.make(
                 environment: environment,
                 sessionStore: sessionStore
@@ -124,6 +134,9 @@ struct AssistantNativeContentView: View {
                 }
                 .presentationDetents([.medium])
             }
+        }
+        .task(id: authSession?.userID) {
+            await restoreRemoteProgressIfAvailable()
         }
     }
 
@@ -240,15 +253,42 @@ struct AssistantNativeContentView: View {
     private func handleSignedIn(_ session: SupabaseAuthSession) {
         authSession = session
         progressStore = progressStoreFactory()
-        progressStore.save(state.persisted)
+        hasAttemptedRemoteProgressLoad = false
         isShowingSignIn = false
     }
 
     private func signOut() {
         signInController?.signOut()
         authSession = nil
+        hasAttemptedRemoteProgressLoad = false
         progressStore = UserDefaultsSaveMVPProgressStore()
         progressStore.save(state.persisted)
+    }
+
+    private func restoreRemoteProgressIfAvailable() async {
+        guard !hasAttemptedRemoteProgressLoad,
+              let authSession else {
+            return
+        }
+
+        hasAttemptedRemoteProgressLoad = true
+        progressStore = progressStoreFactory()
+
+        guard let loader = remoteProgressLoaderFactory(authSession) else {
+            progressStore.save(state.persisted)
+            return
+        }
+
+        do {
+            if let remoteState = try await loader.load() {
+                state = SaveMVPState(persisted: remoteState)
+                progressStore.save(remoteState)
+            } else {
+                progressStore.save(state.persisted)
+            }
+        } catch {
+            return
+        }
     }
 }
 
