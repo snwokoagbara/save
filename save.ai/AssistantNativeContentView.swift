@@ -272,9 +272,14 @@ struct AssistantNativeContentView: View {
         }
 
         hasAttemptedRemoteProgressLoad = true
+        if let refreshedSession = await refreshAuthSessionIfNeeded(authSession) {
+            self.authSession = refreshedSession
+        }
+
         progressStore = progressStoreFactory()
 
-        guard let loader = remoteProgressLoaderFactory(authSession) else {
+        guard let activeSession = self.authSession,
+              let loader = remoteProgressLoaderFactory(activeSession) else {
             progressStore.save(state.persisted)
             return
         }
@@ -289,6 +294,15 @@ struct AssistantNativeContentView: View {
         } catch {
             return
         }
+    }
+
+    private func refreshAuthSessionIfNeeded(_ session: SupabaseAuthSession) async -> SupabaseAuthSession? {
+        guard !session.isUsable(),
+              let signInController else {
+            return session
+        }
+
+        return try? await signInController.refreshStoredSession()
     }
 }
 

@@ -216,6 +216,7 @@ protocol SupabaseAuthHTTPClient {
 protocol SupabaseAuthSigningIn {
     func signIn(email: String, password: String) async throws -> SupabaseAuthSession
     func signUp(email: String, password: String) async throws -> SupabaseAuthSignUpResult
+    func refreshSession(refreshToken: String) async throws -> SupabaseAuthSession
 }
 
 struct URLSessionSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
@@ -300,9 +301,49 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
         return SupabaseAuthSignUpResult(userID: userID, session: session)
     }
 
+    func refreshSession(refreshToken: String) async throws -> SupabaseAuthSession {
+        var components = URLComponents(
+            url: configuration.projectURL
+                .appendingPathComponent("auth")
+                .appendingPathComponent("v1")
+                .appendingPathComponent("token"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "grant_type", value: "refresh_token")]
+
+        guard let url = components?.url else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder.saveMVP.encode(RefreshTokenPayload(refreshToken: refreshToken))
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let data = try await httpClient.data(for: request)
+        let response = try JSONDecoder.saveMVP.decode(PasswordSignInResponse.self, from: data)
+        let expiresAt = response.expiresIn.map { now().addingTimeInterval(TimeInterval($0)) }
+
+        return SupabaseAuthSession(
+            userID: response.user.id,
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expiresAt: expiresAt
+        )
+    }
+
     private struct PasswordSignInPayload: Encodable {
         let email: String
         let password: String
+    }
+
+    private struct RefreshTokenPayload: Encodable {
+        let refreshToken: String
+
+        enum CodingKeys: String, CodingKey {
+            case refreshToken = "refresh_token"
+        }
     }
 
     private struct PasswordSignInResponse: Decodable {
@@ -389,6 +430,24 @@ struct SaveMVPSignInController {
 
     func signOut() {
         sessionStore.clear()
+    }
+
+    func refreshStoredSession(now: Date = Date()) async throws -> SupabaseAuthSession? {
+        guard let session = sessionStore.load() else {
+            return nil
+        }
+
+        guard !session.isUsable(now: now) else {
+            return session
+        }
+
+        guard let refreshToken = session.refreshToken else {
+            return nil
+        }
+
+        let refreshedSession = try await authClient.refreshSession(refreshToken: refreshToken)
+        sessionStore.save(refreshedSession)
+        return refreshedSession
     }
 }
 

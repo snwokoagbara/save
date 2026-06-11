@@ -409,6 +409,45 @@ struct save_aiTests {
         ))
     }
 
+    @Test func supabasePasswordAuthClientRefreshesSessionWithRefreshToken() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000abc")!
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "access_token": "new-access-token",
+              "refresh_token": "new-refresh-token",
+              "expires_in": 3600,
+              "user": { "id": "\(userID.uuidString)" }
+            }
+            """.data(using: .utf8)!
+        )
+        let authClient = SupabaseRESTAuthClient(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            httpClient: client,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+
+        let session = try await authClient.refreshSession(refreshToken: "old-refresh-token")
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/auth/v1/token?grant_type=refresh_token")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let body = try #require(request.httpBody)
+        let json = try #require(String(data: body, encoding: .utf8))
+        #expect(json.contains("\"refresh_token\":\"old-refresh-token\""))
+        #expect(session == SupabaseAuthSession(
+            userID: userID,
+            accessToken: "new-access-token",
+            refreshToken: "new-refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        ))
+    }
+
     @Test func supabasePasswordAuthClientBuildsSignupRequestAndDecodesPendingUser() async throws {
         let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000aaa")!
         let client = CapturingSupabaseAuthHTTPClient(
@@ -563,6 +602,53 @@ struct save_aiTests {
         #expect(sessionStore.load() == nil)
     }
 
+    @Test func signInControllerRefreshesAndStoresExpiredSession() async throws {
+        let expiredSession = SupabaseAuthSession(
+            userID: UUID(uuidString: "00000000-0000-0000-0000-000000000333")!,
+            accessToken: "expired-access-token",
+            refreshToken: "old-refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_799_999_000)
+        )
+        let refreshedSession = SupabaseAuthSession(
+            userID: expiredSession.userID,
+            accessToken: "new-access-token",
+            refreshToken: "new-refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        )
+        let authClient = CapturingAuthSigningIn(session: refreshedSession)
+        let sessionStore = InMemorySupabaseAuthSessionStore(session: expiredSession)
+        let controller = SaveMVPSignInController(
+            authClient: authClient,
+            sessionStore: sessionStore
+        )
+
+        let session = try await controller.refreshStoredSession(now: Date(timeIntervalSince1970: 1_800_000_000))
+
+        #expect(session == refreshedSession)
+        #expect(sessionStore.load() == refreshedSession)
+        #expect(authClient.refreshRequests == ["old-refresh-token"])
+    }
+
+    @Test func signInControllerSkipsRefreshForUsableSession() async throws {
+        let storedSession = SupabaseAuthSession(
+            userID: UUID(uuidString: "00000000-0000-0000-0000-000000000333")!,
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+        )
+        let authClient = CapturingAuthSigningIn(session: storedSession)
+        let sessionStore = InMemorySupabaseAuthSessionStore(session: storedSession)
+        let controller = SaveMVPSignInController(
+            authClient: authClient,
+            sessionStore: sessionStore
+        )
+
+        let session = try await controller.refreshStoredSession(now: Date(timeIntervalSince1970: 1_800_000_000))
+
+        #expect(session == storedSession)
+        #expect(authClient.refreshRequests.isEmpty)
+    }
+
     @Test func signInControllerFactoryRequiresSupabaseConfiguration() async throws {
         #expect(SaveMVPSignInControllerFactory.make(environment: [:]) == nil)
         #expect(SaveMVPSignInControllerFactory.make(environment: [
@@ -700,6 +786,7 @@ private final class CapturingAuthSigningIn: SupabaseAuthSigningIn {
 
     private(set) var requests: [Request] = []
     private(set) var signUpRequests: [Request] = []
+    private(set) var refreshRequests: [String] = []
     let session: SupabaseAuthSession
 
     init(session: SupabaseAuthSession) {
@@ -714,6 +801,11 @@ private final class CapturingAuthSigningIn: SupabaseAuthSigningIn {
     func signUp(email: String, password: String) async throws -> SupabaseAuthSignUpResult {
         signUpRequests.append(Request(email: email, password: password))
         return SupabaseAuthSignUpResult(userID: session.userID, session: session)
+    }
+
+    func refreshSession(refreshToken: String) async throws -> SupabaseAuthSession {
+        refreshRequests.append(refreshToken)
+        return session
     }
 }
 
