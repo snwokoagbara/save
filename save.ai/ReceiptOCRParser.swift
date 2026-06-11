@@ -32,8 +32,8 @@ struct ReceiptOCRParser {
             throw ReceiptOCRParserError.missingMerchant
         }
 
-        guard let dateLine = lines.first(where: { Self.dateFormatter.date(from: $0) != nil }),
-              let purchasedAt = Self.dateFormatter.date(from: dateLine) else {
+        guard let dateLine = lines.first(where: { Self.date(from: $0) != nil }),
+              let purchasedAt = Self.date(from: dateLine) else {
             throw ReceiptOCRParserError.missingDate
         }
 
@@ -45,14 +45,12 @@ struct ReceiptOCRParser {
         let lineItems = lines.compactMap { line -> ReceiptDraftLineItem? in
             guard line != merchant,
                   line != dateLine,
-                  !line.lowercased().hasPrefix("total"),
+                  !Self.isSummaryLine(line),
                   let amount = amount(in: line) else {
                 return nil
             }
 
-            let name = line
-                .replacingOccurrences(of: String(format: "%.2f", amount), with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = name(in: line, amount: amount)
 
             guard !name.isEmpty else {
                 return nil
@@ -87,13 +85,41 @@ struct ReceiptOCRParser {
         return Double(line[range])
     }
 
-    private static let dateFormatter: DateFormatter = {
+    private func name(in line: String, amount: Double) -> String {
+        line
+            .replacingOccurrences(of: String(format: "%.2f", amount), with: "")
+            .replacingOccurrences(of: "$", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isSummaryLine(_ line: String) -> Bool {
+        let lowercasedLine = line.lowercased()
+        return ["total", "subtotal", "tax", "balance"].contains { lowercasedLine.hasPrefix($0) }
+    }
+
+    private static func date(from line: String) -> Date? {
+        for formatter in dateFormatters {
+            if let date = formatter.date(from: line) {
+                return date
+            }
+        }
+
+        return nil
+    }
+
+    private static let dateFormatters: [DateFormatter] = [
+        makeDateFormatter("yyyy-MM-dd"),
+        makeDateFormatter("MM/dd/yyyy"),
+        makeDateFormatter("M/d/yyyy")
+    ]
+
+    private static func makeDateFormatter(_ dateFormat: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.dateFormat = dateFormat
         return formatter
-    }()
+    }
 }
 
 enum ReceiptOCRFixtures {

@@ -715,6 +715,23 @@ struct save_aiTests {
         #expect(draft.lineItems.first?.amount == 8.99)
     }
 
+    @Test func receiptOCRParserHandlesCommonReceiptFormatting() async throws {
+        let draft = try ReceiptOCRParser().parse("""
+        CVS Pharmacy
+        05/22/2026
+        Bandages $8.99
+        Saline Solution $23.48
+        Subtotal $32.47
+        Tax $0.00
+        TOTAL $32.47
+        """)
+
+        #expect(draft.merchant == "CVS Pharmacy")
+        #expect(draft.totalAmount == 32.47)
+        #expect(draft.lineItems.map(\.name) == ["Bandages", "Saline Solution"])
+        #expect(draft.lineItems.map(\.amount) == [8.99, 23.48])
+    }
+
     @Test func mvpImportsReceiptDraftForReview() async throws {
         let draft = try ReceiptOCRParser().parse(Self.fixtureReceiptOCR)
         var state = SaveMVPState()

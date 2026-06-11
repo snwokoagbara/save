@@ -13,6 +13,7 @@ struct AssistantNativeContentView: View {
     @State private var isShowingSignIn = false
     @State private var isShowingReceiptIntake = false
     @State private var receiptReviewRoute: ReceiptReviewRoute?
+    @State private var pendingReviewReceiptID: UUID?
     @State private var claimPacketRoute: ClaimPacketRoute?
     @State private var isShowingTaxExport = false
 
@@ -138,6 +139,15 @@ struct AssistantNativeContentView: View {
         .task(id: authSession?.userID) {
             await restoreRemoteProgressIfAvailable()
         }
+        .onChange(of: isShowingReceiptIntake) { _, isPresented in
+            guard !isPresented,
+                  let receiptID = pendingReviewReceiptID else {
+                return
+            }
+
+            pendingReviewReceiptID = nil
+            receiptReviewRoute = ReceiptReviewRoute(receiptID: receiptID)
+        }
     }
 
     private var kaiHome: some View {
@@ -204,6 +214,7 @@ struct AssistantNativeContentView: View {
                         try? $0.importSampleReceipt()
                     }
                     isShowingReceiptIntake = false
+                    showLatestReceiptReview()
                 },
                 importImageReceipt: { image in
                     let draft = try await VisionReceiptOCRService().draft(from: image)
@@ -211,6 +222,7 @@ struct AssistantNativeContentView: View {
                         $0.importReceiptDraft(draft)
                     }
                     isShowingReceiptIntake = false
+                    showLatestReceiptReview()
                 }
             )
             .presentationDetents([.medium])
@@ -303,6 +315,14 @@ struct AssistantNativeContentView: View {
         }
 
         return try? await signInController.refreshStoredSession()
+    }
+
+    private func showLatestReceiptReview() {
+        guard let receipt = state.receipts.first else {
+            return
+        }
+
+        pendingReviewReceiptID = receipt.id
     }
 }
 
@@ -1012,6 +1032,8 @@ private struct ReceiptReviewSheet: View {
     let receipt: Receipt
     let classify: (ReceiptLineItem, Eligibility) -> Void
 
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         NavigationStack {
             List {
@@ -1019,6 +1041,7 @@ private struct ReceiptReviewSheet: View {
                     LabeledContent("Merchant", value: receipt.merchant)
                     LabeledContent("Source", value: receipt.source.rawValue)
                     LabeledContent("Total", value: receipt.total.currency)
+                    LabeledContent("Review", value: reviewStatus)
                 }
 
                 Section("Line items") {
@@ -1031,7 +1054,24 @@ private struct ReceiptReviewSheet: View {
             }
             .navigationTitle("Review receipt")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .disabled(receipt.hasNeedsReviewItem)
+                }
+            }
         }
+    }
+
+    private var reviewStatus: String {
+        let remainingCount = receipt.lineItems.filter { $0.eligibility == .needsReview }.count
+        if remainingCount == 0 {
+            return "Ready"
+        }
+
+        return "\(remainingCount) left"
     }
 }
 
