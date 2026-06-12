@@ -43,6 +43,8 @@ struct SaveMVPState {
     private var exportedTaxReport: Bool
     private var importedSampleReceipt: Bool
     private var importedReceiptDrafts: [ReceiptDraft]
+    private var receiptEdits: [ReceiptEdit]
+    private var receiptLineItemEdits: [ReceiptLineItemEdit]
     private var submittedClaimAdministratorNames: Set<String>
     private var reimbursedClaimAdministratorNames: Set<String>
 
@@ -57,6 +59,8 @@ struct SaveMVPState {
         exportedTaxReport: Bool = false,
         importedSampleReceipt: Bool = false,
         importedReceiptDrafts: [ReceiptDraft] = [],
+        receiptEdits: [ReceiptEdit] = [],
+        receiptLineItemEdits: [ReceiptLineItemEdit] = [],
         submittedClaimAdministratorNames: Set<String> = [],
         reimbursedClaimAdministratorNames: Set<String> = []
     ) {
@@ -70,6 +74,8 @@ struct SaveMVPState {
         self.exportedTaxReport = exportedTaxReport
         self.importedSampleReceipt = importedSampleReceipt
         self.importedReceiptDrafts = importedReceiptDrafts
+        self.receiptEdits = receiptEdits
+        self.receiptLineItemEdits = receiptLineItemEdits
         self.submittedClaimAdministratorNames = submittedClaimAdministratorNames
         self.reimbursedClaimAdministratorNames = reimbursedClaimAdministratorNames
     }
@@ -106,6 +112,14 @@ struct SaveMVPState {
             importReceiptDraft(draft, persistsDraft: false)
         }
 
+        persisted.receiptEdits.forEach { edit in
+            apply(edit)
+        }
+
+        persisted.receiptLineItemEdits.forEach { edit in
+            apply(edit)
+        }
+
         persisted.receiptLineItemClassifications.forEach { classification in
             apply(classification)
         }
@@ -120,6 +134,8 @@ struct SaveMVPState {
             exportedTaxReport: exportedTaxReport,
             importedSampleReceipt: importedSampleReceipt,
             importedReceiptDrafts: importedReceiptDrafts,
+            receiptEdits: receiptEdits,
+            receiptLineItemEdits: receiptLineItemEdits,
             receiptLineItemClassifications: receiptLineItemClassifications,
             submittedClaimAdministratorNames: submittedClaimAdministratorNames,
             reimbursedClaimAdministratorNames: reimbursedClaimAdministratorNames
@@ -328,6 +344,103 @@ struct SaveMVPState {
         )
     }
 
+    mutating func editReceipt(_ id: UUID, merchant: String, date: Date) {
+        guard let receipt = receipts.first(where: { $0.id == id }) else {
+            return
+        }
+
+        let trimmedMerchant = merchant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMerchant.isEmpty else {
+            return
+        }
+
+        let editIndex = receiptEdits.firstIndex { edit in
+            edit.merchant == receipt.merchant &&
+                edit.purchasedAt == receipt.date
+        }
+        let originalMerchant = editIndex.map { receiptEdits[$0].originalMerchant } ?? receipt.merchant
+        let originalPurchasedAt = editIndex.map { receiptEdits[$0].originalPurchasedAt } ?? receipt.date
+        let edit = ReceiptEdit(
+            originalMerchant: originalMerchant,
+            originalPurchasedAt: originalPurchasedAt,
+            merchant: trimmedMerchant,
+            purchasedAt: date
+        )
+
+        if let editIndex {
+            receiptEdits[editIndex] = edit
+        } else {
+            receiptEdits.append(edit)
+        }
+
+        receiptLineItemEdits = receiptLineItemEdits.map { lineItemEdit in
+            guard lineItemEdit.receiptMerchant == receipt.merchant,
+                  lineItemEdit.receiptPurchasedAt == receipt.date else {
+                return lineItemEdit
+            }
+
+            return ReceiptLineItemEdit(
+                receiptMerchant: trimmedMerchant,
+                receiptPurchasedAt: date,
+                originalItemName: lineItemEdit.originalItemName,
+                originalAmount: lineItemEdit.originalAmount,
+                itemName: lineItemEdit.itemName,
+                amount: lineItemEdit.amount
+            )
+        }
+
+        replaceReceipt(id, merchant: trimmedMerchant, date: date)
+    }
+
+    mutating func editLineItem(_ id: UUID, name: String, amount: Double) {
+        guard let receipt = receipts.first(where: { receipt in
+            receipt.lineItems.contains { $0.id == id }
+        }),
+              let lineItem = receipt.lineItems.first(where: { $0.id == id }) else {
+            return
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let roundedAmount = amount.roundedToCents()
+        guard !trimmedName.isEmpty, roundedAmount >= 0 else {
+            return
+        }
+
+        let editIndex = receiptLineItemEdits.firstIndex { edit in
+            edit.receiptMerchant == receipt.merchant &&
+                edit.receiptPurchasedAt == receipt.date &&
+                edit.itemName == lineItem.name &&
+                edit.amount == lineItem.amount
+        }
+        let originalItemName = editIndex.map { receiptLineItemEdits[$0].originalItemName } ?? lineItem.name
+        let originalAmount = editIndex.map { receiptLineItemEdits[$0].originalAmount } ?? lineItem.amount
+        let edit = ReceiptLineItemEdit(
+            receiptMerchant: receipt.merchant,
+            receiptPurchasedAt: receipt.date,
+            originalItemName: originalItemName,
+            originalAmount: originalAmount,
+            itemName: trimmedName,
+            amount: roundedAmount
+        )
+
+        if let editIndex {
+            receiptLineItemEdits[editIndex] = edit
+        } else {
+            receiptLineItemEdits.append(edit)
+        }
+
+        replaceLineItem(
+            id,
+            with: ReceiptLineItem(
+                id: lineItem.id,
+                name: trimmedName,
+                amount: roundedAmount,
+                eligibility: lineItem.eligibility,
+                confidence: lineItem.confidence
+            )
+        )
+    }
+
     private var receiptLineItemClassifications: [ReceiptLineItemClassification] {
         receipts.flatMap { receipt in
             receipt.lineItems
@@ -357,6 +470,43 @@ struct SaveMVPState {
         }
 
         classifyLineItem(lineItem.id, as: classification.eligibility)
+    }
+
+    private mutating func apply(_ edit: ReceiptEdit) {
+        guard let receipt = receipts.first(where: { receipt in
+            receipt.merchant == edit.originalMerchant &&
+                receipt.date == edit.originalPurchasedAt
+        }) else {
+            return
+        }
+
+        replaceReceipt(receipt.id, merchant: edit.merchant, date: edit.purchasedAt)
+        receiptEdits.append(edit)
+    }
+
+    private mutating func apply(_ edit: ReceiptLineItemEdit) {
+        guard let receipt = receipts.first(where: { receipt in
+            receipt.merchant == edit.receiptMerchant &&
+                receipt.date == edit.receiptPurchasedAt
+        }),
+              let lineItem = receipt.lineItems.first(where: { item in
+                  item.name == edit.originalItemName &&
+                      item.amount == edit.originalAmount
+              }) else {
+            return
+        }
+
+        replaceLineItem(
+            lineItem.id,
+            with: ReceiptLineItem(
+                id: lineItem.id,
+                name: edit.itemName,
+                amount: edit.amount,
+                eligibility: lineItem.eligibility,
+                confidence: lineItem.confidence
+            )
+        )
+        receiptLineItemEdits.append(edit)
     }
 
     private mutating func submitClaimPacket(administratorName: String) {
@@ -422,6 +572,22 @@ struct SaveMVPState {
                 date: receipt.date,
                 source: receipt.source,
                 lineItems: receipt.lineItems.map { $0.id == id ? replacement : $0 }
+            )
+        }
+    }
+
+    private mutating func replaceReceipt(_ id: UUID, merchant: String, date: Date) {
+        receipts = receipts.map { receipt in
+            guard receipt.id == id else {
+                return receipt
+            }
+
+            return Receipt(
+                id: receipt.id,
+                merchant: merchant,
+                date: date,
+                source: receipt.source,
+                lineItems: receipt.lineItems
             )
         }
     }

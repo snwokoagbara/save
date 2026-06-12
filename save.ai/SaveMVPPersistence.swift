@@ -8,6 +8,22 @@ struct ReceiptLineItemClassification: Codable, Equatable {
     let eligibility: Eligibility
 }
 
+struct ReceiptEdit: Codable, Equatable {
+    let originalMerchant: String
+    let originalPurchasedAt: Date
+    let merchant: String
+    let purchasedAt: Date
+}
+
+struct ReceiptLineItemEdit: Codable, Equatable {
+    let receiptMerchant: String
+    let receiptPurchasedAt: Date
+    let originalItemName: String
+    let originalAmount: Double
+    let itemName: String
+    let amount: Double
+}
+
 struct SaveMVPPersistedState: Codable, Equatable {
     var hasCompletedOnboarding: Bool
     var connectedSources: Set<ConnectedSource>
@@ -16,6 +32,8 @@ struct SaveMVPPersistedState: Codable, Equatable {
     var exportedTaxReport: Bool
     var importedSampleReceipt: Bool
     var importedReceiptDrafts: [ReceiptDraft]
+    var receiptEdits: [ReceiptEdit]
+    var receiptLineItemEdits: [ReceiptLineItemEdit]
     var receiptLineItemClassifications: [ReceiptLineItemClassification]
     var submittedClaimAdministratorNames: Set<String>
     var reimbursedClaimAdministratorNames: Set<String>
@@ -28,6 +46,8 @@ struct SaveMVPPersistedState: Codable, Equatable {
         exportedTaxReport: Bool = false,
         importedSampleReceipt: Bool = false,
         importedReceiptDrafts: [ReceiptDraft] = [],
+        receiptEdits: [ReceiptEdit] = [],
+        receiptLineItemEdits: [ReceiptLineItemEdit] = [],
         receiptLineItemClassifications: [ReceiptLineItemClassification] = [],
         submittedClaimAdministratorNames: Set<String> = [],
         reimbursedClaimAdministratorNames: Set<String> = []
@@ -39,6 +59,8 @@ struct SaveMVPPersistedState: Codable, Equatable {
         self.exportedTaxReport = exportedTaxReport
         self.importedSampleReceipt = importedSampleReceipt
         self.importedReceiptDrafts = importedReceiptDrafts
+        self.receiptEdits = receiptEdits
+        self.receiptLineItemEdits = receiptLineItemEdits
         self.receiptLineItemClassifications = receiptLineItemClassifications
         self.submittedClaimAdministratorNames = submittedClaimAdministratorNames
         self.reimbursedClaimAdministratorNames = reimbursedClaimAdministratorNames
@@ -52,6 +74,8 @@ struct SaveMVPPersistedState: Codable, Equatable {
         case exportedTaxReport
         case importedSampleReceipt
         case importedReceiptDrafts
+        case receiptEdits
+        case receiptLineItemEdits
         case receiptLineItemClassifications
         case submittedClaimAdministratorNames
         case reimbursedClaimAdministratorNames
@@ -67,6 +91,8 @@ struct SaveMVPPersistedState: Codable, Equatable {
         exportedTaxReport = try container.decodeIfPresent(Bool.self, forKey: .exportedTaxReport) ?? false
         importedSampleReceipt = try container.decodeIfPresent(Bool.self, forKey: .importedSampleReceipt) ?? false
         importedReceiptDrafts = try container.decodeIfPresent([ReceiptDraft].self, forKey: .importedReceiptDrafts) ?? []
+        receiptEdits = try container.decodeIfPresent([ReceiptEdit].self, forKey: .receiptEdits) ?? []
+        receiptLineItemEdits = try container.decodeIfPresent([ReceiptLineItemEdit].self, forKey: .receiptLineItemEdits) ?? []
         receiptLineItemClassifications = try container.decodeIfPresent([ReceiptLineItemClassification].self, forKey: .receiptLineItemClassifications) ?? []
         submittedClaimAdministratorNames = try container.decodeIfPresent(Set<String>.self, forKey: .submittedClaimAdministratorNames) ?? []
         reimbursedClaimAdministratorNames = try container.decodeIfPresent(Set<String>.self, forKey: .reimbursedClaimAdministratorNames) ?? []

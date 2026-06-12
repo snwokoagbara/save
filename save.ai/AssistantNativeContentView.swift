@@ -233,6 +233,14 @@ struct AssistantNativeContentView: View {
                     updateState {
                         $0.classifyLineItem(lineItem.id, as: eligibility)
                     }
+                } editReceipt: { receipt, merchant, date in
+                    updateState {
+                        $0.editReceipt(receipt.id, merchant: merchant, date: date)
+                    }
+                } editLineItem: { lineItem, name, amount in
+                    updateState {
+                        $0.editLineItem(lineItem.id, name: name, amount: amount)
+                    }
                 }
                 .presentationDetents([.medium, .large])
             }
@@ -1031,8 +1039,12 @@ private struct AssistantEvidenceView: View {
 private struct ReceiptReviewSheet: View {
     let receipt: Receipt
     let classify: (ReceiptLineItem, Eligibility) -> Void
+    let editReceipt: (Receipt, String, Date) -> Void
+    let editLineItem: (ReceiptLineItem, String, Double) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var isEditingReceipt = false
+    @State private var editingLineItem: ReceiptLineItem?
 
     var body: some View {
         NavigationStack {
@@ -1042,12 +1054,19 @@ private struct ReceiptReviewSheet: View {
                     LabeledContent("Source", value: receipt.source.rawValue)
                     LabeledContent("Total", value: receipt.total.currency)
                     LabeledContent("Review", value: reviewStatus)
+                    Button {
+                        isEditingReceipt = true
+                    } label: {
+                        Label("Edit receipt", systemImage: "pencil")
+                    }
                 }
 
                 Section("Line items") {
                     ForEach(receipt.lineItems) { item in
                         LineItemReviewCard(item: item) { eligibility in
                             classify(item, eligibility)
+                        } edit: {
+                            editingLineItem = item
                         }
                     }
                 }
@@ -1063,6 +1082,18 @@ private struct ReceiptReviewSheet: View {
                 }
             }
         }
+        .sheet(isPresented: $isEditingReceipt) {
+            ReceiptEditSheet(receipt: receipt) { merchant, date in
+                editReceipt(receipt, merchant, date)
+            }
+            .presentationDetents([.medium])
+        }
+        .sheet(item: $editingLineItem) { item in
+            LineItemEditSheet(item: item) { name, amount in
+                editLineItem(item, name, amount)
+            }
+            .presentationDetents([.medium])
+        }
     }
 
     private var reviewStatus: String {
@@ -1075,9 +1106,112 @@ private struct ReceiptReviewSheet: View {
     }
 }
 
+private struct ReceiptEditSheet: View {
+    let receipt: Receipt
+    let save: (String, Date) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var merchant: String
+    @State private var date: Date
+
+    init(receipt: Receipt, save: @escaping (String, Date) -> Void) {
+        self.receipt = receipt
+        self.save = save
+        _merchant = State(initialValue: receipt.merchant)
+        _date = State(initialValue: receipt.date)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Receipt") {
+                    TextField("Merchant", text: $merchant)
+                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                }
+            }
+            .navigationTitle("Edit receipt")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        save(merchant, date)
+                        dismiss()
+                    }
+                    .disabled(merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct LineItemEditSheet: View {
+    let item: ReceiptLineItem
+    let save: (String, Double) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var amount: String
+
+    init(item: ReceiptLineItem, save: @escaping (String, Double) -> Void) {
+        self.item = item
+        self.save = save
+        _name = State(initialValue: item.name)
+        _amount = State(initialValue: String(format: "%.2f", item.amount))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Line item") {
+                    TextField("Name", text: $name)
+                    TextField("Amount", text: $amount)
+                        .keyboardType(.decimalPad)
+                }
+            }
+            .navigationTitle("Edit item")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if let parsedAmount {
+                            save(name, parsedAmount)
+                            dismiss()
+                        }
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && parsedAmount != nil
+    }
+
+    private var parsedAmount: Double? {
+        let cleanedAmount = amount.replacingOccurrences(of: "$", with: "")
+        guard let value = Double(cleanedAmount), value >= 0 else {
+            return nil
+        }
+
+        return value
+    }
+}
+
 private struct LineItemReviewCard: View {
     let item: ReceiptLineItem
     let classify: (Eligibility) -> Void
+    let edit: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1092,8 +1226,15 @@ private struct LineItemReviewCard: View {
 
                 Spacer()
 
-                Text(item.amount.currency)
-                    .font(.subheadline.weight(.bold))
+                HStack(spacing: 8) {
+                    Text(item.amount.currency)
+                        .font(.subheadline.weight(.bold))
+                    Button(action: edit) {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Edit \(item.name)")
+                }
             }
 
             if item.eligibility == .needsReview {

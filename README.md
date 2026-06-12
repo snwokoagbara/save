@@ -48,3 +48,13 @@ For local runs, copy `.env.example` to `.env` and fill in project values. The iO
 When those values are present in the Xcode scheme environment, the app shows a sign-in control in the top bar. A successful sign-in stores the user session locally and immediately syncs the current progress snapshot to `mvp_progress_snapshots`.
 
 Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app configuration.
+
+## V1 Next Steps
+
+1. Persist receipts and claim packets in first-class Supabase tables; keep `mvp_progress_snapshots` as a fallback while the table model stabilizes.
+2. Finish receipt editing in the review loop: merchant, date, item name, amount, and classification.
+3. Make claim packet export user-accessible through an iOS share flow.
+4. Make Schedule A CSV/PDF export user-accessible through an iOS share flow.
+5. Add account sync polish: signed-in state, last synced state, sync failure messaging, and manual sync retry.
+6. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
+7. Defer Gmail OAuth and Plaid until receipt upload, review, claim packet export, and tax export are solid.

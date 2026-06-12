@@ -770,6 +770,47 @@ struct save_aiTests {
         #expect(state.taxExport.totalMedicalExpenses == 8.99)
     }
 
+    @Test func mvpEditsImportedReceiptMetadataAndLineItems() async throws {
+        let draft = try ReceiptOCRParser().parse(Self.fixtureReceiptOCR)
+        var state = SaveMVPState(receipts: [], claimPackets: [])
+
+        state.importReceiptDraft(draft)
+        let receipt = try #require(state.receipts.first)
+        let firstItem = try #require(receipt.lineItems.first)
+        let editedDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+        state.editReceipt(receipt.id, merchant: "CVS Health", date: editedDate)
+        state.editLineItem(firstItem.id, name: "Flexible bandages", amount: 9.49)
+
+        let editedReceipt = try #require(state.receipts.first)
+        #expect(editedReceipt.merchant == "CVS Health")
+        #expect(editedReceipt.date == editedDate)
+        #expect(editedReceipt.lineItems.first?.name == "Flexible bandages")
+        #expect(editedReceipt.lineItems.first?.amount == 9.49)
+        #expect(editedReceipt.total == 32.97)
+    }
+
+    @Test func mvpProgressSnapshotRestoresEditedReceiptFields() async throws {
+        let draft = try ReceiptOCRParser().parse(Self.fixtureReceiptOCR)
+        var state = SaveMVPState(receipts: [], claimPackets: [])
+
+        state.importReceiptDraft(draft)
+        let receipt = try #require(state.receipts.first)
+        let firstItem = try #require(receipt.lineItems.first)
+        let editedDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+        state.editReceipt(receipt.id, merchant: "CVS Health", date: editedDate)
+        state.editLineItem(firstItem.id, name: "Flexible bandages", amount: 9.49)
+
+        let restored = SaveMVPState(persisted: state.persisted)
+        let restoredReceipt = try #require(restored.receipts.first)
+
+        #expect(restoredReceipt.merchant == "CVS Health")
+        #expect(restoredReceipt.date == editedDate)
+        #expect(restoredReceipt.lineItems.first?.name == "Flexible bandages")
+        #expect(restoredReceipt.lineItems.first?.amount == 9.49)
+    }
+
     @Test func mvpProgressSnapshotRestoresClassifiedImportedReceiptLineItems() async throws {
         let draft = try ReceiptOCRParser().parse(Self.fixtureReceiptOCR)
         var state = SaveMVPState(receipts: [], claimPackets: [])
