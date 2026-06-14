@@ -404,6 +404,42 @@ struct save_aiTests {
         #expect(lineItemBody.contains("\"eligibility\":\"fsa_eligible\""))
     }
 
+    @Test func supabaseFirstClassProgressSyncerWaitsForReceiptsBeforeLineItems() async throws {
+        let client = DeferredSupabaseHTTPClient()
+        let syncer = SupabaseRESTSaveMVPFirstClassProgressSyncer(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        syncer.push(
+            SupabaseSaveMVPProgressRecord(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                state: SaveMVPState().persisted,
+                updatedAt: Date(timeIntervalSince1970: 1_800_000_002)
+            )
+        ) { _ in }
+
+        #expect(client.requestedTables == ["receipts"])
+
+        client.completeNext()
+        #expect(client.requestedTables == ["receipts", "receipt_line_items"])
+
+        client.completeNext()
+        #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets"])
+
+        client.completeNext()
+        #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets", "tax_exports"])
+    }
+
     @Test func supabaseProgressLoaderBuildsAuthenticatedSnapshotRequestAndDecodesState() async throws {
         let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000789")!
         let client = CapturingSupabaseAuthHTTPClient(
@@ -983,6 +1019,24 @@ private final class CapturingSupabaseHTTPClient: SupabaseHTTPClient {
     func send(_ request: URLRequest, completion: @escaping (Result<Void, Error>) -> Void) {
         requests.append(request)
         completion(.success(()))
+    }
+}
+
+private final class DeferredSupabaseHTTPClient: SupabaseHTTPClient {
+    private(set) var requests: [URLRequest] = []
+    private var completions: [(Result<Void, Error>) -> Void] = []
+
+    var requestedTables: [String] {
+        requests.compactMap { $0.url?.lastPathComponent }
+    }
+
+    func send(_ request: URLRequest, completion: @escaping (Result<Void, Error>) -> Void) {
+        requests.append(request)
+        completions.append(completion)
+    }
+
+    func completeNext(_ result: Result<Void, Error> = .success(())) {
+        completions.removeFirst()(result)
     }
 }
 

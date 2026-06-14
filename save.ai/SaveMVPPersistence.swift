@@ -668,34 +668,30 @@ struct SupabaseRESTSaveMVPFirstClassProgressSyncer: SaveMVPRemoteProgressSyncing
     }
 
     private func sendRequests(_ requests: [URLRequest?], completion: @escaping (Result<Void, Error>) -> Void) {
-        var firstError: Error?
-        let lock = NSLock()
-        let group = DispatchGroup()
+        sendRequest(at: 0, in: requests, completion: completion)
+    }
 
-        for request in requests {
-            guard let request else {
-                completion(.failure(SupabaseProgressSyncError.invalidRequest))
-                return
-            }
-
-            group.enter()
-            httpClient.send(request) { result in
-                if case .failure(let error) = result {
-                    lock.lock()
-                    if firstError == nil {
-                        firstError = error
-                    }
-                    lock.unlock()
-                }
-                group.leave()
-            }
+    private func sendRequest(
+        at index: Int,
+        in requests: [URLRequest?],
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard index < requests.count else {
+            completion(.success(()))
+            return
         }
 
-        group.notify(queue: .global()) {
-            if let firstError {
-                completion(.failure(firstError))
-            } else {
-                completion(.success(()))
+        guard let request = requests[index] else {
+            completion(.failure(SupabaseProgressSyncError.invalidRequest))
+            return
+        }
+
+        httpClient.send(request) { result in
+            switch result {
+            case .success:
+                sendRequest(at: index + 1, in: requests, completion: completion)
+            case .failure(let error):
+                completion(.failure(error))
             }
         }
     }
