@@ -53,10 +53,13 @@ When those values are present in the Xcode scheme environment, the app shows a s
 
 Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app configuration.
 
+## Verified QA
+
+- June 14, 2026: Signed-in simulator QA against the live Supabase project synced 1 progress snapshot, 4 receipts, 7 receipt line items, 2 claim packets, and 1 tax export for the QA account.
+
 ## V1 Next Steps
 
 1. Restore from first-class Supabase tables once the table model has production data; keep `mvp_progress_snapshots` as the fallback until then.
 2. Add claim-packet item join sync after claim packet rows are stable enough to avoid duplicate associations.
-3. Add signed-in end-to-end QA for first-class table writes against the live Supabase project.
-4. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-5. Defer Gmail OAuth and Plaid until receipt upload, review, claim packet export, tax export, and sync restore are solid.
+3. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
+4. Defer Gmail OAuth and Plaid until receipt upload, review, claim packet export, tax export, and sync restore are solid.
