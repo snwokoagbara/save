@@ -8,9 +8,13 @@ SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA
 - Demo onboarding with Gmail and bank source toggles.
 - Receipt import through sample data, photo picker, and Vision OCR.
 - Receipt review and line-item eligibility classification.
+- Receipt metadata and line-item editing during review.
 - HSA/FSA claim packet preparation and status tracking.
-- Schedule A medical-expense export preview.
-- Local progress persistence with optional Supabase progress sync.
+- Claim packet PDF export through the iOS share sheet.
+- Schedule A medical-expense CSV/PDF export through the iOS share sheet.
+- Local progress persistence with optional Supabase snapshot sync.
+- Supabase first-class table sync for receipts, receipt line items, claim packets, and tax exports.
+- Account sync status, failure messaging, and manual sync retry.
 
 ## Build
 
@@ -45,16 +49,14 @@ For local runs, copy `.env.example` to `.env` and fill in project values. The iO
 - `SAVE_SUPABASE_URL`
 - `SAVE_SUPABASE_PUBLISHABLE_KEY`
 
-When those values are present in the Xcode scheme environment, the app shows a sign-in control in the top bar. A successful sign-in stores the user session locally and immediately syncs the current progress snapshot to `mvp_progress_snapshots`.
+When those values are present in the Xcode scheme environment, the app shows a sign-in control in the top bar and account card. A successful sign-in stores the user session locally, syncs the current progress snapshot to `mvp_progress_snapshots`, and upserts V1 domain rows to `receipts`, `receipt_line_items`, `claim_packets`, and `tax_exports`.
 
 Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app configuration.
 
 ## V1 Next Steps
 
-1. Persist receipts and claim packets in first-class Supabase tables; keep `mvp_progress_snapshots` as a fallback while the table model stabilizes.
-2. Finish receipt editing in the review loop: merchant, date, item name, amount, and classification.
-3. Make claim packet export user-accessible through an iOS share flow.
-4. Make Schedule A CSV/PDF export user-accessible through an iOS share flow.
-5. Add account sync polish: signed-in state, last synced state, sync failure messaging, and manual sync retry.
-6. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-7. Defer Gmail OAuth and Plaid until receipt upload, review, claim packet export, and tax export are solid.
+1. Restore from first-class Supabase tables once the table model has production data; keep `mvp_progress_snapshots` as the fallback until then.
+2. Add claim-packet item join sync after claim packet rows are stable enough to avoid duplicate associations.
+3. Add signed-in end-to-end QA for first-class table writes against the live Supabase project.
+4. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
+5. Defer Gmail OAuth and Plaid until receipt upload, review, claim packet export, tax export, and sync restore are solid.

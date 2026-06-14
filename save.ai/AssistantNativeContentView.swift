@@ -3,12 +3,13 @@ import SwiftUI
 import UIKit
 
 struct AssistantNativeContentView: View {
-    private let progressStoreFactory: () -> SaveMVPProgressStoring
+    private let progressStoreFactory: (@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring
     private let remoteProgressLoaderFactory: (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
     @State private var authSession: SupabaseAuthSession?
+    @State private var remoteSyncStatus: SaveMVPRemoteSyncStatus?
     @State private var hasAttemptedRemoteProgressLoad = false
     @State private var isShowingSignIn = false
     @State private var isShowingReceiptIntake = false
@@ -19,12 +20,12 @@ struct AssistantNativeContentView: View {
 
     init(
         progressStore: SaveMVPProgressStoring = UserDefaultsSaveMVPProgressStore(),
-        progressStoreFactory: (() -> SaveMVPProgressStoring)? = nil,
+        progressStoreFactory: (((@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring))? = nil,
         remoteProgressLoaderFactory: @escaping (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
-        self.progressStoreFactory = progressStoreFactory ?? { progressStore }
+        self.progressStoreFactory = progressStoreFactory ?? { _ in progressStore }
         self.remoteProgressLoaderFactory = remoteProgressLoaderFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
@@ -39,13 +40,14 @@ struct AssistantNativeContentView: View {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         sessionStore: SupabaseAuthSessionStoring = UserDefaultsSupabaseAuthSessionStore()
     ) {
-        let makeProgressStore = {
+        let makeProgressStore: (@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring = { remoteSyncStatusChanged in
             SaveMVPProgressStoreFactory.make(
                 environment: environment,
-                sessionStore: sessionStore
+                sessionStore: sessionStore,
+                remoteSyncStatusChanged: remoteSyncStatusChanged
             )
         }
-        let progressStore = makeProgressStore()
+        let progressStore = makeProgressStore { _ in }
         self.init(
             progressStore: progressStore,
             progressStoreFactory: makeProgressStore,
@@ -72,11 +74,15 @@ struct AssistantNativeContentView: View {
                     OnboardingView(
                         authSession: authSession,
                         isSupabaseConfigured: signInController != nil,
+                        remoteSyncStatus: remoteSyncStatus,
                         showSignIn: {
                             isShowingSignIn = true
                         },
                         signOut: {
                             signOut()
+                        },
+                        syncNow: {
+                            syncNow()
                         },
                         startDemo: {
                             updateState {
@@ -115,6 +121,12 @@ struct AssistantNativeContentView: View {
                                     Label("Sign in or create account", systemImage: "person.crop.circle.badge.plus")
                                 }
                             } else {
+                                Button {
+                                    syncNow()
+                                } label: {
+                                    Label("Sync now", systemImage: "arrow.trianglehead.2.clockwise")
+                                }
+
                                 Button(role: .destructive) {
                                     signOut()
                                 } label: {
@@ -139,6 +151,9 @@ struct AssistantNativeContentView: View {
         .task(id: authSession?.userID) {
             await restoreRemoteProgressIfAvailable()
         }
+        .onAppear {
+            configureProgressStore()
+        }
         .onChange(of: isShowingReceiptIntake) { _, isPresented in
             guard !isPresented,
                   let receiptID = pendingReviewReceiptID else {
@@ -161,11 +176,15 @@ struct AssistantNativeContentView: View {
                 AccountStatusView(
                     authSession: authSession,
                     isSupabaseConfigured: signInController != nil,
+                    remoteSyncStatus: remoteSyncStatus,
                     showSignIn: {
                         isShowingSignIn = true
                     },
                     signOut: {
                         signOut()
+                    },
+                    syncNow: {
+                        syncNow()
                     }
                 )
                 AssistantPromptBar {
@@ -272,7 +291,7 @@ struct AssistantNativeContentView: View {
 
     private func handleSignedIn(_ session: SupabaseAuthSession) {
         authSession = session
-        progressStore = progressStoreFactory()
+        configureProgressStore()
         hasAttemptedRemoteProgressLoad = false
         isShowingSignIn = false
     }
@@ -280,9 +299,26 @@ struct AssistantNativeContentView: View {
     private func signOut() {
         signInController?.signOut()
         authSession = nil
+        remoteSyncStatus = nil
         hasAttemptedRemoteProgressLoad = false
         progressStore = UserDefaultsSaveMVPProgressStore()
         progressStore.save(state.persisted)
+    }
+
+    private func syncNow() {
+        progressStore.save(state.persisted)
+    }
+
+    private func configureProgressStore() {
+        progressStore = progressStoreFactory { status in
+            handleRemoteSyncStatus(status)
+        }
+    }
+
+    private func handleRemoteSyncStatus(_ status: SaveMVPRemoteSyncStatus) {
+        Task { @MainActor in
+            remoteSyncStatus = status
+        }
     }
 
     private func restoreRemoteProgressIfAvailable() async {
@@ -296,7 +332,7 @@ struct AssistantNativeContentView: View {
             self.authSession = refreshedSession
         }
 
-        progressStore = progressStoreFactory()
+        configureProgressStore()
 
         guard let activeSession = self.authSession,
               let loader = remoteProgressLoaderFactory(activeSession) else {
@@ -463,8 +499,10 @@ private struct SupabaseSignInSheet: View {
 private struct OnboardingView: View {
     let authSession: SupabaseAuthSession?
     let isSupabaseConfigured: Bool
+    let remoteSyncStatus: SaveMVPRemoteSyncStatus?
     let showSignIn: () -> Void
     let signOut: () -> Void
+    let syncNow: () -> Void
     let startDemo: () -> Void
     let startReceiptOnly: () -> Void
 
@@ -494,8 +532,10 @@ private struct OnboardingView: View {
             AccountStatusView(
                 authSession: authSession,
                 isSupabaseConfigured: isSupabaseConfigured,
+                remoteSyncStatus: remoteSyncStatus,
                 showSignIn: showSignIn,
-                signOut: signOut
+                signOut: signOut,
+                syncNow: syncNow
             )
 
             VStack(alignment: .leading, spacing: 12) {
@@ -621,16 +661,18 @@ private struct AssistantHero: View {
 private struct AccountStatusView: View {
     let authSession: SupabaseAuthSession?
     let isSupabaseConfigured: Bool
+    let remoteSyncStatus: SaveMVPRemoteSyncStatus?
     let showSignIn: () -> Void
     let signOut: () -> Void
+    let syncNow: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: iconName)
                 .font(.headline)
-                .foregroundStyle(authSession == nil ? Color.secondary : Color.teal)
+                .foregroundStyle(iconColor)
                 .frame(width: 34, height: 34)
-                .background((authSession == nil ? Color.secondary : Color.teal).opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(iconColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -644,19 +686,44 @@ private struct AccountStatusView: View {
             Spacer(minLength: 8)
 
             if isSupabaseConfigured {
-                Button(authSession == nil ? "Sign in" : "Sign out") {
-                    if authSession == nil {
+                if authSession == nil {
+                    Button("Sign in") {
                         showSignIn()
-                    } else {
-                        signOut()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.teal)
+                } else {
+                    VStack(spacing: 8) {
+                        Button("Sync now") {
+                            syncNow()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.teal)
+                        .disabled(isSyncing)
+
+                        Button("Sign out") {
+                            signOut()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.secondary)
                     }
                 }
-                .buttonStyle(.bordered)
-                .tint(authSession == nil ? .teal : .secondary)
             }
         }
         .padding(14)
         .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var iconColor: Color {
+        if !isSupabaseConfigured || authSession == nil {
+            return .secondary
+        }
+
+        if case .failed = remoteSyncStatus {
+            return .orange
+        }
+
+        return .teal
     }
 
     private var iconName: String {
@@ -664,7 +731,20 @@ private struct AccountStatusView: View {
             return "icloud.slash"
         }
 
-        return authSession == nil ? "person.crop.circle.badge.plus" : "checkmark.icloud.fill"
+        if authSession == nil {
+            return "person.crop.circle.badge.plus"
+        }
+
+        switch remoteSyncStatus {
+        case .syncing:
+            return "arrow.trianglehead.2.clockwise"
+        case .synced:
+            return "checkmark.icloud.fill"
+        case .failed:
+            return "exclamationmark.icloud.fill"
+        case nil:
+            return "checkmark.icloud.fill"
+        }
     }
 
     private var title: String {
@@ -672,7 +752,20 @@ private struct AccountStatusView: View {
             return "Local mode"
         }
 
-        return authSession == nil ? "Not signed in" : "Signed in"
+        if authSession == nil {
+            return "Not signed in"
+        }
+
+        switch remoteSyncStatus {
+        case .syncing:
+            return "Syncing"
+        case .synced:
+            return "Synced"
+        case .failed:
+            return "Sync needs retry"
+        case nil:
+            return "Signed in"
+        }
     }
 
     private var detail: String {
@@ -680,9 +773,32 @@ private struct AccountStatusView: View {
             return "Add Supabase environment values in the scheme to enable account sync."
         }
 
-        return authSession == nil
-            ? "Sign in or create an account to sync progress."
-            : "Progress sync is enabled for this device."
+        guard authSession != nil else {
+            return "Sign in or create an account to sync progress."
+        }
+
+        switch remoteSyncStatus {
+        case .syncing(let date):
+            return "Saving progress changes from \(formattedTime(date))."
+        case .synced(let date):
+            return "Last synced at \(formattedTime(date))."
+        case .failed(let date):
+            return "Last sync failed at \(formattedTime(date)). Check connection and retry."
+        case nil:
+            return "Progress sync is enabled for this device."
+        }
+    }
+
+    private var isSyncing: Bool {
+        if case .syncing = remoteSyncStatus {
+            return true
+        }
+
+        return false
+    }
+
+    private func formattedTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
     }
 }
 

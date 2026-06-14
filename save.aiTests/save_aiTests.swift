@@ -261,6 +261,45 @@ struct save_aiTests {
         ])
     }
 
+    @Test func syncingProgressStoreReportsRemoteSyncStatus() async throws {
+        let localStore = InMemorySaveMVPProgressStore()
+        let remoteSyncer = CapturingSaveMVPRemoteProgressSyncer()
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000456")!
+        let updatedAt = Date(timeIntervalSince1970: 1_800_000_001)
+        var statuses: [SaveMVPRemoteSyncStatus] = []
+        let store = SyncingSaveMVPProgressStore(
+            localStore: localStore,
+            remoteSyncer: remoteSyncer,
+            userID: userID,
+            now: { updatedAt },
+            remoteSyncStatusChanged: { statuses.append($0) }
+        )
+
+        store.save(SaveMVPPersistedState(hasCompletedOnboarding: true))
+
+        #expect(statuses == [.syncing(updatedAt), .synced(updatedAt)])
+    }
+
+    @Test func syncingProgressStoreReportsRemoteSyncFailure() async throws {
+        let localStore = InMemorySaveMVPProgressStore()
+        let remoteSyncer = CapturingSaveMVPRemoteProgressSyncer()
+        remoteSyncer.result = .failure(SupabaseProgressSyncError.httpStatus(500))
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000456")!
+        let updatedAt = Date(timeIntervalSince1970: 1_800_000_001)
+        var statuses: [SaveMVPRemoteSyncStatus] = []
+        let store = SyncingSaveMVPProgressStore(
+            localStore: localStore,
+            remoteSyncer: remoteSyncer,
+            userID: userID,
+            now: { updatedAt },
+            remoteSyncStatusChanged: { statuses.append($0) }
+        )
+
+        store.save(SaveMVPPersistedState(hasCompletedOnboarding: true))
+
+        #expect(statuses == [.syncing(updatedAt), .failed(updatedAt)])
+    }
+
     @Test func supabaseProgressSyncerBuildsAuthenticatedUpsertRequest() async throws {
         let client = CapturingSupabaseHTTPClient()
         let syncer = SupabaseRESTSaveMVPProgressSyncer(
@@ -287,7 +326,7 @@ struct save_aiTests {
                 state: snapshot,
                 updatedAt: Date(timeIntervalSince1970: 1_800_000_002)
             )
-        )
+        ) { _ in }
 
         let request = try #require(client.requests.first)
         #expect(request.url?.absoluteString == "https://example.supabase.co/rest/v1/mvp_progress_snapshots")
@@ -302,6 +341,67 @@ struct save_aiTests {
         #expect(json.contains("\"user_id\""))
         #expect(json.contains("00000000-0000-0000-0000-000000000789"))
         #expect(json.contains("\"hasCompletedOnboarding\":true"))
+    }
+
+    @Test func supabaseFirstClassProgressSyncerBuildsDomainTableUpsertRequests() async throws {
+        let client = CapturingSupabaseHTTPClient()
+        let syncer = SupabaseRESTSaveMVPFirstClassProgressSyncer(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+        var state = SaveMVPState()
+        state.completeOnboarding()
+        state.importReceiptDraft(
+            ReceiptDraft(
+                merchant: "CVS",
+                purchasedAt: DemoData.date(year: 2026, month: 6, day: 10),
+                totalAmount: 24.99,
+                rawText: "CVS\n2026-06-10\nBandage roll 24.99\nTotal 24.99",
+                lineItems: [
+                    ReceiptDraftLineItem(name: "Bandage roll", amount: 24.99, confidence: 0.78)
+                ]
+            )
+        )
+        let importedItem = try #require(state.receipts.first?.lineItems.first)
+        state.classifyLineItem(importedItem.id, as: .fsaEligible)
+        state.prepareFirstDraftClaim()
+        state.exportTaxReport()
+
+        syncer.push(
+            SupabaseSaveMVPProgressRecord(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                state: state.persisted,
+                updatedAt: Date(timeIntervalSince1970: 1_800_000_002)
+            )
+        ) { _ in }
+
+        let urls = client.requests.compactMap { $0.url?.absoluteString }
+        #expect(urls.contains("https://example.supabase.co/rest/v1/receipts"))
+        #expect(urls.contains("https://example.supabase.co/rest/v1/receipt_line_items"))
+        #expect(urls.contains("https://example.supabase.co/rest/v1/claim_packets"))
+        #expect(urls.contains("https://example.supabase.co/rest/v1/tax_exports"))
+        #expect(client.requests.allSatisfy { $0.value(forHTTPHeaderField: "Prefer") == "resolution=merge-duplicates" })
+
+        let receiptRequest = try #require(client.requests.first { $0.url?.lastPathComponent == "receipts" })
+        let receiptData = try #require(receiptRequest.httpBody)
+        let receiptBody = try #require(String(data: receiptData, encoding: .utf8))
+        #expect(receiptBody.contains("\"merchant\":\"CVS\""))
+        #expect(receiptBody.contains("\"status\":\"classified\""))
+
+        let lineItemRequest = try #require(client.requests.first { $0.url?.lastPathComponent == "receipt_line_items" })
+        let lineItemData = try #require(lineItemRequest.httpBody)
+        let lineItemBody = try #require(String(data: lineItemData, encoding: .utf8))
+        #expect(lineItemBody.contains("\"normalized_name\":\"Bandage roll\""))
+        #expect(lineItemBody.contains("\"eligibility\":\"fsa_eligible\""))
     }
 
     @Test func supabaseProgressLoaderBuildsAuthenticatedSnapshotRequestAndDecodesState() async throws {
@@ -869,17 +969,20 @@ private final class CapturingAuthSigningIn: SupabaseAuthSigningIn {
 
 private final class CapturingSaveMVPRemoteProgressSyncer: SaveMVPRemoteProgressSyncing {
     private(set) var records: [SupabaseSaveMVPProgressRecord] = []
+    var result: Result<Void, Error> = .success(())
 
-    func push(_ record: SupabaseSaveMVPProgressRecord) {
+    func push(_ record: SupabaseSaveMVPProgressRecord, completion: @escaping (Result<Void, Error>) -> Void) {
         records.append(record)
+        completion(result)
     }
 }
 
 private final class CapturingSupabaseHTTPClient: SupabaseHTTPClient {
     private(set) var requests: [URLRequest] = []
 
-    func send(_ request: URLRequest) {
+    func send(_ request: URLRequest, completion: @escaping (Result<Void, Error>) -> Void) {
         requests.append(request)
+        completion(.success(()))
     }
 }
 

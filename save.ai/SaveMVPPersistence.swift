@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct ReceiptLineItemClassification: Codable, Equatable {
@@ -117,7 +118,13 @@ struct SupabaseSaveMVPProgressRecord: Codable, Equatable {
 }
 
 protocol SaveMVPRemoteProgressSyncing {
-    func push(_ record: SupabaseSaveMVPProgressRecord)
+    func push(_ record: SupabaseSaveMVPProgressRecord, completion: @escaping (Result<Void, Error>) -> Void)
+}
+
+enum SaveMVPRemoteSyncStatus: Equatable {
+    case syncing(Date)
+    case synced(Date)
+    case failed(Date)
 }
 
 protocol SaveMVPRemoteProgressLoading {
@@ -494,12 +501,40 @@ enum SaveMVPSignInControllerFactory {
 }
 
 protocol SupabaseHTTPClient {
-    func send(_ request: URLRequest)
+    func send(_ request: URLRequest, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 struct URLSessionSupabaseHTTPClient: SupabaseHTTPClient {
-    func send(_ request: URLRequest) {
-        URLSession.shared.dataTask(with: request).resume()
+    func send(_ request: URLRequest, completion: @escaping (Result<Void, Error>) -> Void) {
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                completion(.failure(SupabaseProgressSyncError.httpStatus(httpResponse.statusCode)))
+                return
+            }
+
+            completion(.success(()))
+        }
+        .resume()
+    }
+}
+
+enum SupabaseProgressSyncError: LocalizedError, Equatable {
+    case invalidRequest
+    case httpStatus(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRequest:
+            return "Progress sync request could not be created."
+        case .httpStatus(let statusCode):
+            return "Progress sync failed with HTTP \(statusCode)."
+        }
     }
 }
 
@@ -573,12 +608,13 @@ struct SupabaseRESTSaveMVPProgressSyncer: SaveMVPRemoteProgressSyncing {
         self.httpClient = httpClient
     }
 
-    func push(_ record: SupabaseSaveMVPProgressRecord) {
+    func push(_ record: SupabaseSaveMVPProgressRecord, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let request = makeRequest(for: record) else {
+            completion(.failure(SupabaseProgressSyncError.invalidRequest))
             return
         }
 
-        httpClient.send(request)
+        httpClient.send(request, completion: completion)
     }
 
     private func makeRequest(for record: SupabaseSaveMVPProgressRecord) -> URLRequest? {
@@ -602,22 +638,391 @@ struct SupabaseRESTSaveMVPProgressSyncer: SaveMVPRemoteProgressSyncing {
     }
 }
 
+struct SupabaseRESTSaveMVPFirstClassProgressSyncer: SaveMVPRemoteProgressSyncing {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let httpClient: SupabaseHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        httpClient: SupabaseHTTPClient = URLSessionSupabaseHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.httpClient = httpClient
+    }
+
+    func push(_ record: SupabaseSaveMVPProgressRecord, completion: @escaping (Result<Void, Error>) -> Void) {
+        let state = SaveMVPState(persisted: record.state)
+        let rows = SupabaseFirstClassRows(userID: record.userID, state: state)
+        sendRequests(
+            [
+                makeRequest(table: "receipts", rows: rows.receipts),
+                makeRequest(table: "receipt_line_items", rows: rows.lineItems),
+                makeRequest(table: "claim_packets", rows: rows.claimPackets),
+                makeRequest(table: "tax_exports", rows: rows.taxExports)
+            ],
+            completion: completion
+        )
+    }
+
+    private func sendRequests(_ requests: [URLRequest?], completion: @escaping (Result<Void, Error>) -> Void) {
+        var firstError: Error?
+        let lock = NSLock()
+        let group = DispatchGroup()
+
+        for request in requests {
+            guard let request else {
+                completion(.failure(SupabaseProgressSyncError.invalidRequest))
+                return
+            }
+
+            group.enter()
+            httpClient.send(request) { result in
+                if case .failure(let error) = result {
+                    lock.lock()
+                    if firstError == nil {
+                        firstError = error
+                    }
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .global()) {
+            if let firstError {
+                completion(.failure(firstError))
+            } else {
+                completion(.success(()))
+            }
+        }
+    }
+
+    private func makeRequest<Row: Encodable>(table: String, rows: [Row]) -> URLRequest? {
+        let url = configuration.projectURL
+            .appendingPathComponent("rest")
+            .appendingPathComponent("v1")
+            .appendingPathComponent(table)
+
+        guard let body = try? JSONEncoder.saveMVP.encode(rows) else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+        return request
+    }
+}
+
+private struct SupabaseFirstClassRows {
+    let receipts: [SupabaseReceiptRow]
+    let lineItems: [SupabaseReceiptLineItemRow]
+    let claimPackets: [SupabaseClaimPacketRow]
+    let taxExports: [SupabaseTaxExportRow]
+
+    init(userID: UUID, state: SaveMVPState) {
+        var lineItemRows: [SupabaseReceiptLineItemRow] = []
+
+        receipts = state.receipts.map { receipt in
+            let receiptID = SupabaseDeterministicID.uuid(
+                for: "receipt|\(userID.uuidString)|\(receipt.merchant)|\(receipt.date.saveMVPDay)|\(receipt.source.rawValue)|\(receipt.total)"
+            )
+            receipt.lineItems.enumerated().forEach { index, item in
+                let lineItemID = SupabaseDeterministicID.uuid(
+                    for: "line-item|\(receiptID.uuidString)|\(index)|\(item.name)|\(item.amount)"
+                )
+                lineItemRows.append(
+                    SupabaseReceiptLineItemRow(
+                        id: lineItemID,
+                        userID: userID,
+                        receiptID: receiptID,
+                        originalText: item.name,
+                        normalizedName: item.name,
+                        amount: item.amount,
+                        eligibility: item.eligibility.supabaseValue,
+                        confidence: item.confidence
+                    )
+                )
+            }
+
+            return SupabaseReceiptRow(
+                id: receiptID,
+                userID: userID,
+                source: receipt.source.supabaseValue,
+                status: receipt.hasNeedsReviewItem ? "needs_review" : "classified",
+                merchant: receipt.merchant,
+                purchasedAt: receipt.date.saveMVPDay,
+                totalAmount: receipt.total
+            )
+        }
+        lineItems = lineItemRows
+
+        claimPackets = state.claimPackets.map { packet in
+            SupabaseClaimPacketRow(
+                id: SupabaseDeterministicID.uuid(
+                    for: "claim-packet|\(userID.uuidString)|\(packet.administratorName)|\(packet.total)|\(packet.status.rawValue)"
+                ),
+                userID: userID,
+                administratorName: packet.administratorName,
+                status: packet.status.supabaseValue,
+                submissionMode: packet.submissionMode.supabaseValue,
+                claimAmount: packet.total
+            )
+        }
+
+        taxExports = [
+            SupabaseTaxExportRow(
+                id: SupabaseDeterministicID.uuid(
+                    for: "tax-export|\(userID.uuidString)|\(state.taxExport.year)|\(state.taxExport.totalMedicalExpenses)"
+                ),
+                userID: userID,
+                taxYear: state.taxExport.year,
+                status: state.taxReportArtifact == nil ? "draft" : "generated",
+                totalMedicalExpenses: state.taxExport.totalMedicalExpenses,
+                generatedAt: state.taxReportArtifact == nil ? nil : Date()
+            )
+        ]
+    }
+}
+
+private struct SupabaseReceiptRow: Encodable {
+    let id: UUID
+    let userID: UUID
+    let source: String
+    let status: String
+    let merchant: String
+    let purchasedAt: String
+    let totalAmount: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "user_id"
+        case source
+        case status
+        case merchant
+        case purchasedAt = "purchased_at"
+        case totalAmount = "total_amount"
+    }
+}
+
+private struct SupabaseReceiptLineItemRow: Encodable {
+    let id: UUID
+    let userID: UUID
+    let receiptID: UUID
+    let originalText: String
+    let normalizedName: String
+    let amount: Double
+    let eligibility: String
+    let confidence: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "user_id"
+        case receiptID = "receipt_id"
+        case originalText = "original_text"
+        case normalizedName = "normalized_name"
+        case amount
+        case eligibility
+        case confidence
+    }
+}
+
+private struct SupabaseClaimPacketRow: Encodable {
+    let id: UUID
+    let userID: UUID
+    let administratorName: String
+    let status: String
+    let submissionMode: String
+    let claimAmount: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "user_id"
+        case administratorName = "administrator_name"
+        case status
+        case submissionMode = "submission_mode"
+        case claimAmount = "claim_amount"
+    }
+}
+
+private struct SupabaseTaxExportRow: Encodable {
+    let id: UUID
+    let userID: UUID
+    let taxYear: Int
+    let status: String
+    let totalMedicalExpenses: Double
+    let generatedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "user_id"
+        case taxYear = "tax_year"
+        case status
+        case totalMedicalExpenses = "total_medical_expenses"
+        case generatedAt = "generated_at"
+    }
+}
+
+private enum SupabaseDeterministicID {
+    static func uuid(for key: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data(key.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
+}
+
+private extension ReceiptSource {
+    var supabaseValue: String {
+        switch self {
+        case .camera:
+            return "camera"
+        case .gmail:
+            return "gmail"
+        case .bank:
+            return "bank_match"
+        case .forwardedEmail:
+            return "forwarded_email"
+        }
+    }
+}
+
+private extension Eligibility {
+    var supabaseValue: String {
+        switch self {
+        case .fsaEligible:
+            return "fsa_eligible"
+        case .hsaEligible:
+            return "hsa_eligible"
+        case .scheduleADeductible:
+            return "schedule_a_deductible"
+        case .notEligible:
+            return "not_eligible"
+        case .needsReview:
+            return "needs_review"
+        }
+    }
+}
+
+private extension ClaimStatus {
+    var supabaseValue: String {
+        switch self {
+        case .draft:
+            return "draft"
+        case .ready:
+            return "ready"
+        case .submittedByUser:
+            return "submitted_by_user"
+        case .submittedInApp:
+            return "submitted_in_app"
+        case .reimbursed:
+            return "reimbursed"
+        case .rejected:
+            return "rejected"
+        case .needsAction:
+            return "needs_action"
+        }
+    }
+}
+
+private extension SubmissionMode {
+    var supabaseValue: String {
+        switch self {
+        case .guidedPacket:
+            return "guided_packet"
+        case .inAppSubmission:
+            return "in_app_submission"
+        }
+    }
+}
+
+private extension Date {
+    var saveMVPDay: String {
+        Self.saveMVPDayFormatter.string(from: self)
+    }
+
+    private static let saveMVPDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+}
+
+struct CompositeSaveMVPRemoteProgressSyncer: SaveMVPRemoteProgressSyncing {
+    private let syncers: [SaveMVPRemoteProgressSyncing]
+
+    init(syncers: [SaveMVPRemoteProgressSyncing]) {
+        self.syncers = syncers
+    }
+
+    func push(_ record: SupabaseSaveMVPProgressRecord, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard !syncers.isEmpty else {
+            completion(.success(()))
+            return
+        }
+
+        var firstError: Error?
+        let lock = NSLock()
+        let group = DispatchGroup()
+
+        syncers.forEach { syncer in
+            group.enter()
+            syncer.push(record) { result in
+                if case .failure(let error) = result {
+                    lock.lock()
+                    if firstError == nil {
+                        firstError = error
+                    }
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .global()) {
+            if let firstError {
+                completion(.failure(firstError))
+            } else {
+                completion(.success(()))
+            }
+        }
+    }
+}
+
 struct SyncingSaveMVPProgressStore: SaveMVPProgressStoring {
     private let localStore: SaveMVPProgressStoring
     private let remoteSyncer: SaveMVPRemoteProgressSyncing
     private let userID: UUID
     private let now: () -> Date
+    private let remoteSyncStatusChanged: (SaveMVPRemoteSyncStatus) -> Void
 
     init(
         localStore: SaveMVPProgressStoring,
         remoteSyncer: SaveMVPRemoteProgressSyncing,
         userID: UUID,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        remoteSyncStatusChanged: @escaping (SaveMVPRemoteSyncStatus) -> Void = { _ in }
     ) {
         self.localStore = localStore
         self.remoteSyncer = remoteSyncer
         self.userID = userID
         self.now = now
+        self.remoteSyncStatusChanged = remoteSyncStatusChanged
     }
 
     func load() -> SaveMVPPersistedState {
@@ -626,13 +1031,22 @@ struct SyncingSaveMVPProgressStore: SaveMVPProgressStoring {
 
     func save(_ state: SaveMVPPersistedState) {
         localStore.save(state)
+        let updatedAt = now()
+        remoteSyncStatusChanged(.syncing(updatedAt))
         remoteSyncer.push(
             SupabaseSaveMVPProgressRecord(
                 userID: userID,
                 state: state,
-                updatedAt: now()
+                updatedAt: updatedAt
             )
-        )
+        ) { result in
+            switch result {
+            case .success:
+                remoteSyncStatusChanged(.synced(updatedAt))
+            case .failure:
+                remoteSyncStatusChanged(.failed(updatedAt))
+            }
+        }
     }
 }
 
@@ -703,7 +1117,8 @@ enum SaveMVPProgressStoreFactory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         sessionStore: SupabaseAuthSessionStoring = UserDefaultsSupabaseAuthSessionStore(),
         progressHTTPClient: SupabaseHTTPClient = URLSessionSupabaseHTTPClient(),
-        now: Date = Date()
+        now: Date = Date(),
+        remoteSyncStatusChanged: @escaping (SaveMVPRemoteSyncStatus) -> Void = { _ in }
     ) -> SaveMVPProgressStoring {
         let localStore = UserDefaultsSaveMVPProgressStore()
         guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
@@ -714,12 +1129,22 @@ enum SaveMVPProgressStoreFactory {
 
         return SyncingSaveMVPProgressStore(
             localStore: localStore,
-            remoteSyncer: SupabaseRESTSaveMVPProgressSyncer(
-                configuration: configuration,
-                session: session,
-                httpClient: progressHTTPClient
+            remoteSyncer: CompositeSaveMVPRemoteProgressSyncer(
+                syncers: [
+                    SupabaseRESTSaveMVPProgressSyncer(
+                        configuration: configuration,
+                        session: session,
+                        httpClient: progressHTTPClient
+                    ),
+                    SupabaseRESTSaveMVPFirstClassProgressSyncer(
+                        configuration: configuration,
+                        session: session,
+                        httpClient: progressHTTPClient
+                    )
+                ]
             ),
-            userID: session.userID
+            userID: session.userID,
+            remoteSyncStatusChanged: remoteSyncStatusChanged
         )
     }
 }
