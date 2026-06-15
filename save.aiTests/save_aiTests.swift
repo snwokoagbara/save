@@ -186,6 +186,24 @@ struct save_aiTests {
         #expect(document.text.contains("Submit through the HealthEquity member portal after reviewing the attached itemized evidence."))
     }
 
+    @Test func claimPacketDocumentIncludesSubmissionChecklist() async throws {
+        let packet = ClaimPacket(
+            administratorName: "HealthEquity",
+            lineItems: [
+                ReceiptLineItem(name: "FSA Sunscreen SPF 50", amount: 18.77, eligibility: .fsaEligible, confidence: 0.96)
+            ],
+            submissionMode: .guidedPacket,
+            status: .ready
+        )
+
+        let document = ClaimPacketDocumentBuilder().build(from: packet)
+
+        #expect(document.template.submissionChecklist.contains("Review the required claim fields before opening the administrator portal."))
+        #expect(document.text.contains("Submission checklist:"))
+        #expect(document.text.contains("- Attach the generated SAVE claim packet PDF in HealthEquity."))
+        #expect(document.text.contains("- Return to SAVE and mark the packet submitted after upload."))
+    }
+
     @Test func administratorTemplateLibraryFallsBackToGenericGuidedPacket() async throws {
         let template = ClaimAdministratorTemplateLibrary.template(for: "Unknown Admin")
 

@@ -1494,6 +1494,12 @@ private struct ClaimPacketDetailSheet: View {
                     }
                 }
 
+                Section("Submission checklist") {
+                    ForEach(Array(document.template.submissionChecklist.enumerated()), id: \.element) { index, step in
+                        Label(step, systemImage: "\(index + 1).circle.fill")
+                    }
+                }
+
                 Section("Evidence") {
                     ForEach(packet.lineItems) { item in
                         HStack(alignment: .top, spacing: 10) {

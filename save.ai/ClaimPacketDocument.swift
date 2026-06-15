@@ -7,6 +7,7 @@ struct ClaimAdministratorTemplate: Hashable {
     let supportedSubmissionMode: SubmissionMode
     let requiredFields: [String]
     let evidenceRequirements: [String]
+    let submissionChecklist: [String]
     let instructions: [String]
 }
 
@@ -26,6 +27,11 @@ enum ClaimAdministratorTemplateLibrary {
                     "Itemized receipt showing merchant, purchase date, eligible item, and amount",
                     "Proof of payment when the receipt does not show a paid card transaction"
                 ],
+                submissionChecklist: [
+                    "Review the required claim fields before opening the administrator portal.",
+                    "Attach the generated SAVE claim packet PDF in HealthEquity.",
+                    "Return to SAVE and mark the packet submitted after upload."
+                ],
                 instructions: ["Submit through the HealthEquity member portal after reviewing the attached itemized evidence."]
             )
         }
@@ -39,6 +45,11 @@ enum ClaimAdministratorTemplateLibrary {
                 evidenceRequirements: [
                     "Itemized receipt with merchant, date, item description, and amount",
                     "Card transaction match or paid invoice"
+                ],
+                submissionChecklist: [
+                    "Review the required claim fields before starting the Inspira claim flow.",
+                    "Submit directly through Inspira when in-app submission is available.",
+                    "Return to SAVE and mark the packet submitted after confirmation."
                 ],
                 instructions: ["Use the Inspira claim flow when available; keep the guided packet as the fallback attachment."]
             )
@@ -54,6 +65,11 @@ enum ClaimAdministratorTemplateLibrary {
                     "Itemized receipt or explanation of benefits",
                     "Proof the user paid the expense"
                 ],
+                submissionChecklist: [
+                    "Review the required claim fields before opening WEX.",
+                    "Attach the generated SAVE claim packet PDF in the WEX benefits portal.",
+                    "Return to SAVE and mark the packet submitted after upload."
+                ],
                 instructions: ["Attach this packet in the WEX benefits portal and mark the claim submitted once uploaded."]
             )
         }
@@ -64,6 +80,11 @@ enum ClaimAdministratorTemplateLibrary {
             supportedSubmissionMode: .guidedPacket,
             requiredFields: ["Account holder name", "Date of service", "Provider or merchant", "Claim amount"],
             evidenceRequirements: ["Itemized receipt showing merchant, purchase date, eligible item, and amount"],
+            submissionChecklist: [
+                "Review the required claim fields before opening the administrator portal.",
+                "Attach the generated SAVE claim packet PDF in the administrator portal.",
+                "Return to SAVE and mark the packet submitted after upload."
+            ],
             instructions: ["Submit this packet in the administrator portal, then return to SAVE so Kai can track the status."]
         )
     }
@@ -98,6 +119,9 @@ struct ClaimPacketDocumentBuilder {
             "",
             "Evidence requirements:"
         ] + Self.bulletLines(template.evidenceRequirements) + [
+            "",
+            "Submission checklist:"
+        ] + Self.bulletLines(template.submissionChecklist) + [
             "",
             "Administrator instructions:"
         ] + Self.bulletLines(template.instructions) + [
