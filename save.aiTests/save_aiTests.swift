@@ -19,6 +19,41 @@ struct save_aiTests {
         #expect(summary.needsReviewCount == 1)
     }
 
+    @Test func claimSummaryAssistantStatusLinePluralizesReviewItems() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let summary = ClaimSummary(receipts: [
+            Receipt(
+                merchant: "CVS",
+                date: date,
+                source: .gmail,
+                lineItems: [
+                    ReceiptLineItem(name: "Bandages", amount: 8.99, eligibility: .fsaEligible, confidence: 0.92),
+                    ReceiptLineItem(name: "Unknown item", amount: 4.99, eligibility: .needsReview, confidence: 0.42)
+                ]
+            ),
+            Receipt(
+                merchant: "Walgreens",
+                date: date,
+                source: .bank,
+                lineItems: [
+                    ReceiptLineItem(name: "Sunscreen", amount: 18.77, eligibility: .fsaEligible, confidence: 0.95),
+                    ReceiptLineItem(name: "Store item", amount: 3.50, eligibility: .needsReview, confidence: 0.39)
+                ]
+            ),
+            Receipt(
+                merchant: "LensCrafters",
+                date: date,
+                source: .camera,
+                lineItems: [
+                    ReceiptLineItem(name: "Prescription lenses", amount: 315.41, eligibility: .hsaEligible, confidence: 0.97),
+                    ReceiptLineItem(name: "Case", amount: 6.25, eligibility: .needsReview, confidence: 0.44)
+                ]
+            )
+        ])
+
+        #expect(summary.assistantStatusLine == "3 claim packets found. 3 items need your review before Kai includes them.")
+    }
+
     @Test func claimPacketRequiresEligibleLineItemsAndAdministrator() async throws {
         let readyPacket = ClaimPacket(
             administratorName: "HealthEquity",
@@ -388,6 +423,7 @@ struct save_aiTests {
         #expect(urls.contains("https://example.supabase.co/rest/v1/receipts"))
         #expect(urls.contains("https://example.supabase.co/rest/v1/receipt_line_items"))
         #expect(urls.contains("https://example.supabase.co/rest/v1/claim_packets"))
+        #expect(urls.contains("https://example.supabase.co/rest/v1/claim_packet_items"))
         #expect(urls.contains("https://example.supabase.co/rest/v1/tax_exports"))
         #expect(client.requests.allSatisfy { $0.value(forHTTPHeaderField: "Prefer") == "resolution=merge-duplicates" })
 
@@ -402,6 +438,85 @@ struct save_aiTests {
         let lineItemBody = try #require(String(data: lineItemData, encoding: .utf8))
         #expect(lineItemBody.contains("\"normalized_name\":\"Bandage roll\""))
         #expect(lineItemBody.contains("\"eligibility\":\"fsa_eligible\""))
+    }
+
+    @Test func supabaseFirstClassProgressSyncerBuildsClaimPacketItemRows() async throws {
+        let client = CapturingSupabaseHTTPClient()
+        let syncer = SupabaseRESTSaveMVPFirstClassProgressSyncer(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+        var state = SaveMVPState()
+        state.prepareFirstDraftClaim()
+
+        syncer.push(
+            SupabaseSaveMVPProgressRecord(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                state: state.persisted,
+                updatedAt: Date(timeIntervalSince1970: 1_800_000_002)
+            )
+        ) { _ in }
+
+        let itemRequest = try #require(client.requests.first { $0.url?.lastPathComponent == "claim_packet_items" })
+        let itemData = try #require(itemRequest.httpBody)
+        let itemBody = try #require(String(data: itemData, encoding: .utf8))
+        #expect(itemBody.contains("\"user_id\":\"00000000-0000-0000-0000-000000000789\""))
+        #expect(itemBody.contains("\"claim_packet_id\""))
+        #expect(itemBody.contains("\"receipt_line_item_id\""))
+    }
+
+    @Test func supabaseFirstClassProgressSyncerKeepsClaimPacketIDStableAcrossStatusChanges() async throws {
+        let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000789")!
+        let client = CapturingSupabaseHTTPClient()
+        let syncer = SupabaseRESTSaveMVPFirstClassProgressSyncer(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: userID,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+        var readyState = SaveMVPState()
+        readyState.prepareFirstDraftClaim()
+        var submittedState = readyState
+        let packetID = try #require(submittedState.claimPackets.first?.id)
+        submittedState.submitClaimPacket(packetID)
+
+        syncer.push(
+            SupabaseSaveMVPProgressRecord(
+                userID: userID,
+                state: readyState.persisted,
+                updatedAt: Date(timeIntervalSince1970: 1_800_000_002)
+            )
+        ) { _ in }
+        syncer.push(
+            SupabaseSaveMVPProgressRecord(
+                userID: userID,
+                state: submittedState.persisted,
+                updatedAt: Date(timeIntervalSince1970: 1_800_000_003)
+            )
+        ) { _ in }
+
+        let claimPacketRequests = client.requests.filter { $0.url?.lastPathComponent == "claim_packets" }
+        let firstRequest = try #require(claimPacketRequests.first)
+        let secondRequest = try #require(claimPacketRequests.last)
+        let firstID = try #require(try firstRequest.firstJSONArrayObjectStringValue(forKey: "id"))
+        let secondID = try #require(try secondRequest.firstJSONArrayObjectStringValue(forKey: "id"))
+        #expect(firstID == secondID)
     }
 
     @Test func supabaseFirstClassProgressSyncerWaitsForReceiptsBeforeLineItems() async throws {
@@ -437,7 +552,10 @@ struct save_aiTests {
         #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets"])
 
         client.completeNext()
-        #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets", "tax_exports"])
+        #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets", "claim_packet_items"])
+
+        client.completeNext()
+        #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets", "claim_packet_items", "tax_exports"])
     }
 
     @Test func supabaseProgressLoaderBuildsAuthenticatedSnapshotRequestAndDecodesState() async throws {
@@ -503,6 +621,186 @@ struct save_aiTests {
         let snapshot = try await loader.load()
 
         #expect(snapshot == nil)
+    }
+
+    @Test func supabaseFirstClassProgressLoaderBuildsPersistedStateFromDomainRows() async throws {
+        let receiptID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let lineItemID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
+        let claimPacketID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
+        let client = QueueingSupabaseAuthHTTPClient(responseData: [
+            """
+            [
+              {
+                "id": "\(receiptID.uuidString)",
+                "source": "gmail",
+                "status": "classified",
+                "merchant": "CVS Health",
+                "purchased_at": "2026-06-10",
+                "total_amount": 8.99
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "id": "\(lineItemID.uuidString)",
+                "receipt_id": "\(receiptID.uuidString)",
+                "original_text": "Bandages",
+                "normalized_name": "Flexible bandages",
+                "amount": 8.99,
+                "eligibility": "fsa_eligible",
+                "confidence": 0.91
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "id": "\(claimPacketID.uuidString)",
+                "administrator_name": "HealthEquity",
+                "status": "ready",
+                "submission_mode": "guided_packet",
+                "claim_amount": 8.99
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "claim_packet_id": "\(claimPacketID.uuidString)",
+                "receipt_line_item_id": "\(lineItemID.uuidString)"
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "tax_year": 2026,
+                "status": "generated",
+                "total_medical_expenses": 8.99,
+                "generated_at": "2026-06-14T20:00:00Z"
+              }
+            ]
+            """.data(using: .utf8)!
+        ])
+        let loader = SupabaseRESTSaveMVPFirstClassProgressLoader(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let persisted = try #require(try await loader.load())
+        let state = SaveMVPState(persisted: persisted)
+
+        #expect(client.requestedTables == ["receipts", "receipt_line_items", "claim_packets", "claim_packet_items", "tax_exports"])
+        #expect(state.hasCompletedOnboarding)
+        #expect(state.connectedSources == Set([ConnectedSource.gmail]))
+        #expect(state.receipts.first?.merchant == "CVS Health")
+        #expect(state.receipts.first?.lineItems.first?.id == lineItemID)
+        #expect(state.receipts.first?.lineItems.first?.eligibility == .fsaEligible)
+        #expect(state.claimPackets.first?.id == claimPacketID)
+        #expect(state.claimPackets.first?.lineItems.first?.id == lineItemID)
+        #expect(state.taxReportArtifact?.total == 8.99)
+    }
+
+    @Test func supabaseFirstClassProgressLoaderSkipsClaimPacketsWithoutItems() async throws {
+        let receiptID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let lineItemID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
+        let currentPacketID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
+        let stalePacketID = UUID(uuidString: "30000000-0000-0000-0000-000000000002")!
+        let client = QueueingSupabaseAuthHTTPClient(responseData: [
+            """
+            [
+              {
+                "id": "\(receiptID.uuidString)",
+                "source": "gmail",
+                "status": "classified",
+                "merchant": "CVS Health",
+                "purchased_at": "2026-06-10",
+                "total_amount": 8.99
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "id": "\(lineItemID.uuidString)",
+                "receipt_id": "\(receiptID.uuidString)",
+                "original_text": "Bandages",
+                "normalized_name": "Flexible bandages",
+                "amount": 8.99,
+                "eligibility": "fsa_eligible",
+                "confidence": 0.91
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "id": "\(stalePacketID.uuidString)",
+                "administrator_name": "HealthEquity",
+                "status": "ready",
+                "submission_mode": "guided_packet",
+                "claim_amount": 8.99
+              },
+              {
+                "id": "\(currentPacketID.uuidString)",
+                "administrator_name": "HealthEquity",
+                "status": "ready",
+                "submission_mode": "guided_packet",
+                "claim_amount": 8.99
+              }
+            ]
+            """.data(using: .utf8)!,
+            """
+            [
+              {
+                "claim_packet_id": "\(currentPacketID.uuidString)",
+                "receipt_line_item_id": "\(lineItemID.uuidString)"
+              }
+            ]
+            """.data(using: .utf8)!,
+            "[]".data(using: .utf8)!
+        ])
+        let loader = SupabaseRESTSaveMVPFirstClassProgressLoader(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let persisted = try #require(try await loader.load())
+        let state = SaveMVPState(persisted: persisted)
+
+        #expect(state.claimPackets.map(\.id) == [currentPacketID])
+        #expect(state.claimPackets.first?.lineItems.map(\.id) == [lineItemID])
+    }
+
+    @Test func fallbackProgressLoaderUsesSnapshotWhenFirstClassRowsAreIncomplete() async throws {
+        let snapshot = SaveMVPPersistedState(hasCompletedOnboarding: true, connectedSources: [.bank])
+        let loader = FallbackSaveMVPRemoteProgressLoader(
+            primary: StubRemoteProgressLoader(snapshot: nil),
+            fallback: StubRemoteProgressLoader(snapshot: snapshot)
+        )
+
+        let restored = try await loader.load()
+
+        #expect(restored == snapshot)
     }
 
     @Test func supabasePasswordAuthClientBuildsTokenRequestAndDecodesSession() async throws {
@@ -1051,5 +1349,50 @@ private final class CapturingSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
     func data(for request: URLRequest) async throws -> Data {
         requests.append(request)
         return responseData
+    }
+}
+
+private final class QueueingSupabaseAuthHTTPClient: SupabaseAuthHTTPClient {
+    private(set) var requests: [URLRequest] = []
+    private var responseData: [Data]
+
+    var requestedTables: [String] {
+        requests.compactMap { $0.url?.lastPathComponent }
+    }
+
+    init(responseData: [Data]) {
+        self.responseData = responseData
+    }
+
+    func data(for request: URLRequest) async throws -> Data {
+        requests.append(request)
+        return responseData.removeFirst()
+    }
+}
+
+private final class StubRemoteProgressLoader: SaveMVPRemoteProgressLoading {
+    let snapshot: SaveMVPPersistedState?
+
+    init(snapshot: SaveMVPPersistedState?) {
+        self.snapshot = snapshot
+    }
+
+    func load() async throws -> SaveMVPPersistedState? {
+        snapshot
+    }
+}
+
+private extension URLRequest {
+    func firstJSONArrayObjectStringValue(forKey key: String) throws -> String? {
+        guard let httpBody else {
+            return nil
+        }
+
+        let value = try JSONSerialization.jsonObject(with: httpBody)
+        guard let rows = value as? [[String: Any]] else {
+            return nil
+        }
+
+        return rows.first?[key] as? String
     }
 }

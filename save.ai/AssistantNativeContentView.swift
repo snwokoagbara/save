@@ -654,7 +654,7 @@ private struct AssistantHero: View {
             return "Connect Gmail and bank to let Kai calculate the first claim-back estimate."
         }
 
-        return "\(state.summary.readyClaimCount) claim packets found. \(state.summary.needsReviewCount) item needs your review before Kai includes it."
+        return state.summary.assistantStatusLine
     }
 }
 

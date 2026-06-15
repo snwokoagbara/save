@@ -31,7 +31,7 @@ enum Eligibility: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-struct ReceiptLineItem: Identifiable, Hashable {
+struct ReceiptLineItem: Codable, Identifiable, Hashable {
     let id: UUID
     let name: String
     let amount: Double
@@ -57,7 +57,7 @@ struct ReceiptLineItem: Identifiable, Hashable {
     }
 }
 
-struct Receipt: Identifiable, Hashable {
+struct Receipt: Codable, Identifiable, Hashable {
     let id: UUID
     let merchant: String
     let date: Date
@@ -91,19 +91,19 @@ struct Receipt: Identifiable, Hashable {
     }
 }
 
-enum ReceiptSource: String {
+enum ReceiptSource: String, Codable {
     case camera = "Camera scan"
     case gmail = "Gmail"
     case bank = "Plaid match"
     case forwardedEmail = "Forwarded email"
 }
 
-enum SubmissionMode: String {
+enum SubmissionMode: String, Codable {
     case guidedPacket = "Guided packet"
     case inAppSubmission = "In-app submission"
 }
 
-enum ClaimStatus: String, CaseIterable, Identifiable {
+enum ClaimStatus: String, CaseIterable, Codable, Identifiable {
     case draft = "Draft"
     case ready = "Ready"
     case submittedByUser = "Submitted by user"
@@ -132,7 +132,7 @@ enum ClaimStatus: String, CaseIterable, Identifiable {
     }
 }
 
-struct ClaimPacket: Identifiable, Hashable {
+struct ClaimPacket: Codable, Identifiable, Hashable {
     let id: UUID
     let administratorName: String
     let lineItems: [ReceiptLineItem]
@@ -177,6 +177,13 @@ struct ClaimSummary {
 
     var needsReviewCount: Int {
         receipts.flatMap(\.lineItems).filter { $0.eligibility == .needsReview }.count
+    }
+
+    var assistantStatusLine: String {
+        let packetLabel = readyClaimCount == 1 ? "claim packet" : "claim packets"
+        let reviewPhrase = needsReviewCount == 1 ? "item needs" : "items need"
+        let reviewObject = needsReviewCount == 1 ? "it" : "them"
+        return "\(readyClaimCount) \(packetLabel) found. \(needsReviewCount) \(reviewPhrase) your review before Kai includes \(reviewObject)."
     }
 }
 

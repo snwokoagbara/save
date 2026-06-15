@@ -38,6 +38,9 @@ struct SaveMVPPersistedState: Codable, Equatable {
     var receiptLineItemClassifications: [ReceiptLineItemClassification]
     var submittedClaimAdministratorNames: Set<String>
     var reimbursedClaimAdministratorNames: Set<String>
+    var receipts: [Receipt]?
+    var claimPackets: [ClaimPacket]?
+    var taxReportArtifact: TaxReportArtifact?
 
     init(
         hasCompletedOnboarding: Bool = false,
@@ -51,7 +54,10 @@ struct SaveMVPPersistedState: Codable, Equatable {
         receiptLineItemEdits: [ReceiptLineItemEdit] = [],
         receiptLineItemClassifications: [ReceiptLineItemClassification] = [],
         submittedClaimAdministratorNames: Set<String> = [],
-        reimbursedClaimAdministratorNames: Set<String> = []
+        reimbursedClaimAdministratorNames: Set<String> = [],
+        receipts: [Receipt]? = nil,
+        claimPackets: [ClaimPacket]? = nil,
+        taxReportArtifact: TaxReportArtifact? = nil
     ) {
         self.hasCompletedOnboarding = hasCompletedOnboarding
         self.connectedSources = connectedSources
@@ -65,6 +71,9 @@ struct SaveMVPPersistedState: Codable, Equatable {
         self.receiptLineItemClassifications = receiptLineItemClassifications
         self.submittedClaimAdministratorNames = submittedClaimAdministratorNames
         self.reimbursedClaimAdministratorNames = reimbursedClaimAdministratorNames
+        self.receipts = receipts
+        self.claimPackets = claimPackets
+        self.taxReportArtifact = taxReportArtifact
     }
 
     enum CodingKeys: String, CodingKey {
@@ -80,6 +89,9 @@ struct SaveMVPPersistedState: Codable, Equatable {
         case receiptLineItemClassifications
         case submittedClaimAdministratorNames
         case reimbursedClaimAdministratorNames
+        case receipts
+        case claimPackets
+        case taxReportArtifact
     }
 
     init(from decoder: Decoder) throws {
@@ -97,6 +109,9 @@ struct SaveMVPPersistedState: Codable, Equatable {
         receiptLineItemClassifications = try container.decodeIfPresent([ReceiptLineItemClassification].self, forKey: .receiptLineItemClassifications) ?? []
         submittedClaimAdministratorNames = try container.decodeIfPresent(Set<String>.self, forKey: .submittedClaimAdministratorNames) ?? []
         reimbursedClaimAdministratorNames = try container.decodeIfPresent(Set<String>.self, forKey: .reimbursedClaimAdministratorNames) ?? []
+        receipts = try container.decodeIfPresent([Receipt].self, forKey: .receipts)
+        claimPackets = try container.decodeIfPresent([ClaimPacket].self, forKey: .claimPackets)
+        taxReportArtifact = try container.decodeIfPresent(TaxReportArtifact.self, forKey: .taxReportArtifact)
     }
 }
 
@@ -593,6 +608,287 @@ struct SupabaseRESTSaveMVPProgressLoader: SaveMVPRemoteProgressLoading {
     }
 }
 
+struct SupabaseRESTSaveMVPFirstClassProgressLoader: SaveMVPRemoteProgressLoading {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let httpClient: SupabaseAuthHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.httpClient = httpClient
+    }
+
+    func load() async throws -> SaveMVPPersistedState? {
+        let receipts: [FirstClassReceiptResponse] = try await loadRows(
+            table: "receipts",
+            select: "id,source,status,merchant,purchased_at,total_amount",
+            extraQueryItems: [URLQueryItem(name: "order", value: "purchased_at.desc")]
+        )
+        guard !receipts.isEmpty else {
+            return nil
+        }
+
+        let lineItems: [FirstClassLineItemResponse] = try await loadRows(
+            table: "receipt_line_items",
+            select: "id,receipt_id,original_text,normalized_name,amount,eligibility,confidence",
+            extraQueryItems: [URLQueryItem(name: "order", value: "created_at.asc")]
+        )
+        let claimPackets: [FirstClassClaimPacketResponse] = try await loadRows(
+            table: "claim_packets",
+            select: "id,administrator_name,status,submission_mode,claim_amount",
+            extraQueryItems: [URLQueryItem(name: "order", value: "created_at.asc")]
+        )
+        let claimPacketItems: [FirstClassClaimPacketItemResponse] = try await loadRows(
+            table: "claim_packet_items",
+            select: "claim_packet_id,receipt_line_item_id",
+            extraQueryItems: [URLQueryItem(name: "order", value: "created_at.asc")]
+        )
+        guard claimPackets.isEmpty || !claimPacketItems.isEmpty else {
+            return nil
+        }
+
+        let taxExports: [FirstClassTaxExportResponse] = try await loadRows(
+            table: "tax_exports",
+            select: "tax_year,status,total_medical_expenses,generated_at",
+            extraQueryItems: [
+                URLQueryItem(name: "order", value: "tax_year.desc"),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+        )
+
+        return makePersistedState(
+            receipts: receipts,
+            lineItems: lineItems,
+            claimPackets: claimPackets,
+            claimPacketItems: claimPacketItems,
+            taxExports: taxExports
+        )
+    }
+
+    private func loadRows<Row: Decodable>(
+        table: String,
+        select: String,
+        extraQueryItems: [URLQueryItem] = []
+    ) async throws -> [Row] {
+        guard let request = makeRequest(table: table, select: select, extraQueryItems: extraQueryItems) else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        let data = try await httpClient.data(for: request)
+        return try JSONDecoder.saveMVP.decode([Row].self, from: data)
+    }
+
+    private func makeRequest(
+        table: String,
+        select: String,
+        extraQueryItems: [URLQueryItem]
+    ) -> URLRequest? {
+        var components = URLComponents(
+            url: configuration.projectURL
+                .appendingPathComponent("rest")
+                .appendingPathComponent("v1")
+                .appendingPathComponent(table),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "select", value: select),
+            URLQueryItem(name: "user_id", value: "eq.\(session.userID.uuidString.lowercased())")
+        ] + extraQueryItems
+
+        guard let url = components?.url else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func makePersistedState(
+        receipts: [FirstClassReceiptResponse],
+        lineItems: [FirstClassLineItemResponse],
+        claimPackets: [FirstClassClaimPacketResponse],
+        claimPacketItems: [FirstClassClaimPacketItemResponse],
+        taxExports: [FirstClassTaxExportResponse]
+    ) -> SaveMVPPersistedState {
+        let lineItemsByReceiptID = Dictionary(grouping: lineItems, by: \.receiptID)
+        let restoredReceipts = receipts.map { receipt in
+            Receipt(
+                id: receipt.id,
+                merchant: receipt.merchant ?? "Unknown merchant",
+                date: Self.date(from: receipt.purchasedAt) ?? Date(timeIntervalSince1970: 0),
+                source: ReceiptSource(supabaseValue: receipt.source) ?? .camera,
+                lineItems: (lineItemsByReceiptID[receipt.id] ?? []).map { item in
+                    ReceiptLineItem(
+                        id: item.id,
+                        name: item.normalizedName,
+                        amount: item.amount,
+                        eligibility: Eligibility(supabaseValue: item.eligibility) ?? .needsReview,
+                        confidence: item.confidence
+                    )
+                }
+            )
+        }
+        let lineItemsByID = Dictionary(
+            uniqueKeysWithValues: restoredReceipts.flatMap(\.lineItems).map { ($0.id, $0) }
+        )
+        let claimPacketItemsByPacketID = Dictionary(grouping: claimPacketItems, by: \.claimPacketID)
+        let restoredClaimPackets = claimPackets.compactMap { packet -> ClaimPacket? in
+            let packetLineItems = (claimPacketItemsByPacketID[packet.id] ?? []).compactMap { item in
+                lineItemsByID[item.receiptLineItemID]
+            }
+            guard !packetLineItems.isEmpty else {
+                return nil
+            }
+
+            return ClaimPacket(
+                id: packet.id,
+                administratorName: packet.administratorName,
+                lineItems: packetLineItems,
+                submissionMode: SubmissionMode(supabaseValue: packet.submissionMode) ?? .guidedPacket,
+                status: ClaimStatus(supabaseValue: packet.status) ?? .draft
+            )
+        }
+        let generatedTaxExport = taxExports.first { $0.status == "generated" }
+        let taxReportArtifact = generatedTaxExport.map { export in
+            TaxReportArtifact(
+                filename: "save-medical-expenses-\(export.taxYear).csv",
+                csvPreview: TaxExport(year: export.taxYear, receipts: restoredReceipts).csvPreview,
+                total: export.totalMedicalExpenses
+            )
+        }
+
+        return SaveMVPPersistedState(
+            hasCompletedOnboarding: true,
+            connectedSources: Set(restoredReceipts.compactMap { $0.source.connectedSource }),
+            receipts: restoredReceipts,
+            claimPackets: restoredClaimPackets,
+            taxReportArtifact: taxReportArtifact
+        )
+    }
+
+    private static func date(from day: String?) -> Date? {
+        guard let day else {
+            return nil
+        }
+
+        return dayFormatter.date(from: day)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private struct FirstClassReceiptResponse: Decodable {
+        let id: UUID
+        let source: String
+        let status: String
+        let merchant: String?
+        let purchasedAt: String?
+        let totalAmount: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case source
+            case status
+            case merchant
+            case purchasedAt = "purchased_at"
+            case totalAmount = "total_amount"
+        }
+    }
+
+    private struct FirstClassLineItemResponse: Decodable {
+        let id: UUID
+        let receiptID: UUID
+        let originalText: String?
+        let normalizedName: String
+        let amount: Double
+        let eligibility: String
+        let confidence: Double
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case receiptID = "receipt_id"
+            case originalText = "original_text"
+            case normalizedName = "normalized_name"
+            case amount
+            case eligibility
+            case confidence
+        }
+    }
+
+    private struct FirstClassClaimPacketResponse: Decodable {
+        let id: UUID
+        let administratorName: String
+        let status: String
+        let submissionMode: String
+        let claimAmount: Double
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case administratorName = "administrator_name"
+            case status
+            case submissionMode = "submission_mode"
+            case claimAmount = "claim_amount"
+        }
+    }
+
+    private struct FirstClassClaimPacketItemResponse: Decodable {
+        let claimPacketID: UUID
+        let receiptLineItemID: UUID
+
+        enum CodingKeys: String, CodingKey {
+            case claimPacketID = "claim_packet_id"
+            case receiptLineItemID = "receipt_line_item_id"
+        }
+    }
+
+    private struct FirstClassTaxExportResponse: Decodable {
+        let taxYear: Int
+        let status: String
+        let totalMedicalExpenses: Double
+        let generatedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case taxYear = "tax_year"
+            case status
+            case totalMedicalExpenses = "total_medical_expenses"
+            case generatedAt = "generated_at"
+        }
+    }
+}
+
+struct FallbackSaveMVPRemoteProgressLoader: SaveMVPRemoteProgressLoading {
+    private let primary: SaveMVPRemoteProgressLoading
+    private let fallback: SaveMVPRemoteProgressLoading
+
+    init(primary: SaveMVPRemoteProgressLoading, fallback: SaveMVPRemoteProgressLoading) {
+        self.primary = primary
+        self.fallback = fallback
+    }
+
+    func load() async throws -> SaveMVPPersistedState? {
+        if let state = try await primary.load() {
+            return state
+        }
+
+        return try await fallback.load()
+    }
+}
+
 struct SupabaseRESTSaveMVPProgressSyncer: SaveMVPRemoteProgressSyncing {
     private let configuration: SupabaseSaveMVPConfiguration
     private let session: SupabaseAuthSession
@@ -661,6 +957,7 @@ struct SupabaseRESTSaveMVPFirstClassProgressSyncer: SaveMVPRemoteProgressSyncing
                 makeRequest(table: "receipts", rows: rows.receipts),
                 makeRequest(table: "receipt_line_items", rows: rows.lineItems),
                 makeRequest(table: "claim_packets", rows: rows.claimPackets),
+                makeRequest(table: "claim_packet_items", rows: rows.claimPacketItems),
                 makeRequest(table: "tax_exports", rows: rows.taxExports)
             ],
             completion: completion
@@ -721,10 +1018,12 @@ private struct SupabaseFirstClassRows {
     let receipts: [SupabaseReceiptRow]
     let lineItems: [SupabaseReceiptLineItemRow]
     let claimPackets: [SupabaseClaimPacketRow]
+    let claimPacketItems: [SupabaseClaimPacketItemRow]
     let taxExports: [SupabaseTaxExportRow]
 
     init(userID: UUID, state: SaveMVPState) {
         var lineItemRows: [SupabaseReceiptLineItemRow] = []
+        var lineItemRowIDsByAppID: [UUID: UUID] = [:]
 
         receipts = state.receipts.map { receipt in
             let receiptID = SupabaseDeterministicID.uuid(
@@ -734,6 +1033,7 @@ private struct SupabaseFirstClassRows {
                 let lineItemID = SupabaseDeterministicID.uuid(
                     for: "line-item|\(receiptID.uuidString)|\(index)|\(item.name)|\(item.amount)"
                 )
+                lineItemRowIDsByAppID[item.id] = lineItemID
                 lineItemRows.append(
                     SupabaseReceiptLineItemRow(
                         id: lineItemID,
@@ -760,11 +1060,30 @@ private struct SupabaseFirstClassRows {
         }
         lineItems = lineItemRows
 
+        var claimPacketItemRows: [SupabaseClaimPacketItemRow] = []
         claimPackets = state.claimPackets.map { packet in
-            SupabaseClaimPacketRow(
-                id: SupabaseDeterministicID.uuid(
-                    for: "claim-packet|\(userID.uuidString)|\(packet.administratorName)|\(packet.total)|\(packet.status.rawValue)"
-                ),
+            let claimPacketID = SupabaseDeterministicID.uuid(
+                for: "claim-packet|\(userID.uuidString)|\(packet.administratorName)|\(packet.submissionMode.rawValue)"
+            )
+            packet.lineItems.forEach { item in
+                guard let lineItemID = lineItemRowIDsByAppID[item.id] else {
+                    return
+                }
+
+                claimPacketItemRows.append(
+                    SupabaseClaimPacketItemRow(
+                        id: SupabaseDeterministicID.uuid(
+                            for: "claim-packet-item|\(claimPacketID.uuidString)|\(lineItemID.uuidString)"
+                        ),
+                        userID: userID,
+                        claimPacketID: claimPacketID,
+                        receiptLineItemID: lineItemID
+                    )
+                )
+            }
+
+            return SupabaseClaimPacketRow(
+                id: claimPacketID,
                 userID: userID,
                 administratorName: packet.administratorName,
                 status: packet.status.supabaseValue,
@@ -772,6 +1091,7 @@ private struct SupabaseFirstClassRows {
                 claimAmount: packet.total
             )
         }
+        claimPacketItems = claimPacketItemRows
 
         taxExports = [
             SupabaseTaxExportRow(
@@ -848,6 +1168,20 @@ private struct SupabaseClaimPacketRow: Encodable {
     }
 }
 
+private struct SupabaseClaimPacketItemRow: Encodable {
+    let id: UUID
+    let userID: UUID
+    let claimPacketID: UUID
+    let receiptLineItemID: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "user_id"
+        case claimPacketID = "claim_packet_id"
+        case receiptLineItemID = "receipt_line_item_id"
+    }
+}
+
 private struct SupabaseTaxExportRow: Encodable {
     let id: UUID
     let userID: UUID
@@ -881,6 +1215,21 @@ private enum SupabaseDeterministicID {
 }
 
 private extension ReceiptSource {
+    init?(supabaseValue: String) {
+        switch supabaseValue {
+        case "camera":
+            self = .camera
+        case "gmail":
+            self = .gmail
+        case "bank_match":
+            self = .bank
+        case "forwarded_email":
+            self = .forwardedEmail
+        default:
+            return nil
+        }
+    }
+
     var supabaseValue: String {
         switch self {
         case .camera:
@@ -893,9 +1242,39 @@ private extension ReceiptSource {
             return "forwarded_email"
         }
     }
+
+    var connectedSource: ConnectedSource? {
+        switch self {
+        case .gmail:
+            return .gmail
+        case .bank:
+            return .bank
+        case .forwardedEmail:
+            return .forwardingInbox
+        case .camera:
+            return nil
+        }
+    }
 }
 
 private extension Eligibility {
+    init?(supabaseValue: String) {
+        switch supabaseValue {
+        case "fsa_eligible":
+            self = .fsaEligible
+        case "hsa_eligible":
+            self = .hsaEligible
+        case "schedule_a_deductible":
+            self = .scheduleADeductible
+        case "not_eligible":
+            self = .notEligible
+        case "needs_review":
+            self = .needsReview
+        default:
+            return nil
+        }
+    }
+
     var supabaseValue: String {
         switch self {
         case .fsaEligible:
@@ -913,6 +1292,27 @@ private extension Eligibility {
 }
 
 private extension ClaimStatus {
+    init?(supabaseValue: String) {
+        switch supabaseValue {
+        case "draft":
+            self = .draft
+        case "ready":
+            self = .ready
+        case "submitted_by_user":
+            self = .submittedByUser
+        case "submitted_in_app":
+            self = .submittedInApp
+        case "reimbursed":
+            self = .reimbursed
+        case "rejected":
+            self = .rejected
+        case "needs_action":
+            self = .needsAction
+        default:
+            return nil
+        }
+    }
+
     var supabaseValue: String {
         switch self {
         case .draft:
@@ -934,6 +1334,17 @@ private extension ClaimStatus {
 }
 
 private extension SubmissionMode {
+    init?(supabaseValue: String) {
+        switch supabaseValue {
+        case "guided_packet":
+            self = .guidedPacket
+        case "in_app_submission":
+            self = .inAppSubmission
+        default:
+            return nil
+        }
+    }
+
     var supabaseValue: String {
         switch self {
         case .guidedPacket:
@@ -1155,9 +1566,15 @@ enum SaveMVPRemoteProgressLoaderFactory {
             return nil
         }
 
-        return SupabaseRESTSaveMVPProgressLoader(
-            configuration: configuration,
-            session: session
+        return FallbackSaveMVPRemoteProgressLoader(
+            primary: SupabaseRESTSaveMVPFirstClassProgressLoader(
+                configuration: configuration,
+                session: session
+            ),
+            fallback: SupabaseRESTSaveMVPProgressLoader(
+                configuration: configuration,
+                session: session
+            )
         )
     }
 }

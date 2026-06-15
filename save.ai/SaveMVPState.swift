@@ -26,7 +26,7 @@ struct MVPTask: Identifiable, Hashable {
     let symbol: String
 }
 
-struct TaxReportArtifact: Hashable {
+struct TaxReportArtifact: Codable, Hashable {
     let filename: String
     let csvPreview: String
     let total: Double
@@ -47,6 +47,7 @@ struct SaveMVPState {
     private var receiptLineItemEdits: [ReceiptLineItemEdit]
     private var submittedClaimAdministratorNames: Set<String>
     private var reimbursedClaimAdministratorNames: Set<String>
+    private var usesFullDomainPersistence: Bool
 
     init(
         hasCompletedOnboarding: Bool = false,
@@ -62,7 +63,8 @@ struct SaveMVPState {
         receiptEdits: [ReceiptEdit] = [],
         receiptLineItemEdits: [ReceiptLineItemEdit] = [],
         submittedClaimAdministratorNames: Set<String> = [],
-        reimbursedClaimAdministratorNames: Set<String> = []
+        reimbursedClaimAdministratorNames: Set<String> = [],
+        usesFullDomainPersistence: Bool = false
     ) {
         self.hasCompletedOnboarding = hasCompletedOnboarding
         self.connectedSources = connectedSources
@@ -78,9 +80,32 @@ struct SaveMVPState {
         self.receiptLineItemEdits = receiptLineItemEdits
         self.submittedClaimAdministratorNames = submittedClaimAdministratorNames
         self.reimbursedClaimAdministratorNames = reimbursedClaimAdministratorNames
+        self.usesFullDomainPersistence = usesFullDomainPersistence
     }
 
     init(persisted: SaveMVPPersistedState) {
+        if let receipts = persisted.receipts,
+           let claimPackets = persisted.claimPackets {
+            self.init(
+                hasCompletedOnboarding: persisted.hasCompletedOnboarding,
+                connectedSources: persisted.connectedSources,
+                receipts: receipts,
+                claimPackets: claimPackets,
+                taxReportArtifact: persisted.taxReportArtifact,
+                excludedFirstReviewItem: persisted.excludedFirstReviewItem,
+                preparedFirstDraftClaim: persisted.preparedFirstDraftClaim,
+                exportedTaxReport: persisted.exportedTaxReport,
+                importedSampleReceipt: persisted.importedSampleReceipt,
+                importedReceiptDrafts: persisted.importedReceiptDrafts,
+                receiptEdits: persisted.receiptEdits,
+                receiptLineItemEdits: persisted.receiptLineItemEdits,
+                submittedClaimAdministratorNames: persisted.submittedClaimAdministratorNames,
+                reimbursedClaimAdministratorNames: persisted.reimbursedClaimAdministratorNames,
+                usesFullDomainPersistence: true
+            )
+            return
+        }
+
         self.init(hasCompletedOnboarding: persisted.hasCompletedOnboarding)
         connectedSources = persisted.connectedSources
 
@@ -138,7 +163,10 @@ struct SaveMVPState {
             receiptLineItemEdits: receiptLineItemEdits,
             receiptLineItemClassifications: receiptLineItemClassifications,
             submittedClaimAdministratorNames: submittedClaimAdministratorNames,
-            reimbursedClaimAdministratorNames: reimbursedClaimAdministratorNames
+            reimbursedClaimAdministratorNames: reimbursedClaimAdministratorNames,
+            receipts: usesFullDomainPersistence ? receipts : nil,
+            claimPackets: usesFullDomainPersistence ? claimPackets : nil,
+            taxReportArtifact: usesFullDomainPersistence ? taxReportArtifact : nil
         )
     }
 
