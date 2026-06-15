@@ -10,6 +10,7 @@ SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA
 - Receipt review and line-item eligibility classification.
 - Receipt metadata and line-item editing during review.
 - HSA/FSA claim packet preparation and status tracking.
+- Local administrator templates for HealthEquity, Inspira, WEX, and a generic guided-packet fallback.
 - Claim packet PDF export through the iOS share sheet.
 - Schedule A medical-expense CSV/PDF export through the iOS share sheet.
 - Local progress persistence with optional Supabase snapshot sync and restore.
@@ -61,5 +62,6 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 ## V1 Next Steps
 
 1. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-2. Defer Gmail OAuth and Plaid until after the reviewed V1 prototype is accepted.
-3. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.
+2. Move administrator templates from the local library into Supabase-managed rows when template editing/review workflow is needed.
+3. Defer Gmail OAuth and Plaid until after the reviewed V1 prototype is accepted.
+4. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.

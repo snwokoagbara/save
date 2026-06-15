@@ -1483,6 +1483,17 @@ private struct ClaimPacketDetailSheet: View {
                     LabeledContent("Total", value: packet.total.currency)
                 }
 
+                Section("Administrator template") {
+                    LabeledContent("Version", value: document.template.version)
+                    LabeledContent("Supported mode", value: document.template.supportedSubmissionMode.rawValue)
+                    ForEach(document.template.requiredFields, id: \.self) { field in
+                        Label(field, systemImage: "text.badge.checkmark")
+                    }
+                    ForEach(document.template.evidenceRequirements, id: \.self) { requirement in
+                        Label(requirement, systemImage: "doc.text.magnifyingglass")
+                    }
+                }
+
                 Section("Evidence") {
                     ForEach(packet.lineItems) { item in
                         HStack(alignment: .top, spacing: 10) {

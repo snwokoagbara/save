@@ -1062,6 +1062,7 @@ private struct SupabaseFirstClassRows {
 
         var claimPacketItemRows: [SupabaseClaimPacketItemRow] = []
         claimPackets = state.claimPackets.map { packet in
+            let template = ClaimAdministratorTemplateLibrary.template(for: packet.administratorName)
             let claimPacketID = SupabaseDeterministicID.uuid(
                 for: "claim-packet|\(userID.uuidString)|\(packet.administratorName)|\(packet.submissionMode.rawValue)"
             )
@@ -1088,7 +1089,8 @@ private struct SupabaseFirstClassRows {
                 administratorName: packet.administratorName,
                 status: packet.status.supabaseValue,
                 submissionMode: packet.submissionMode.supabaseValue,
-                claimAmount: packet.total
+                claimAmount: packet.total,
+                templateVersion: template.version
             )
         }
         claimPacketItems = claimPacketItemRows
@@ -1157,6 +1159,7 @@ private struct SupabaseClaimPacketRow: Encodable {
     let status: String
     let submissionMode: String
     let claimAmount: Double
+    let templateVersion: String
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1165,6 +1168,7 @@ private struct SupabaseClaimPacketRow: Encodable {
         case status
         case submissionMode = "submission_mode"
         case claimAmount = "claim_amount"
+        case templateVersion = "template_version"
     }
 }
 

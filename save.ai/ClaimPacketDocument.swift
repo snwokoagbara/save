@@ -1,16 +1,86 @@
 import Foundation
 import UIKit
 
+struct ClaimAdministratorTemplate: Hashable {
+    let administratorName: String
+    let version: String
+    let supportedSubmissionMode: SubmissionMode
+    let requiredFields: [String]
+    let evidenceRequirements: [String]
+    let instructions: [String]
+}
+
+enum ClaimAdministratorTemplateLibrary {
+    static func template(for administratorName: String) -> ClaimAdministratorTemplate {
+        let trimmedName = administratorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmedName.isEmpty ? "Administrator" : trimmedName
+        let normalizedName = displayName.lowercased()
+
+        if normalizedName.contains("healthequity") {
+            return ClaimAdministratorTemplate(
+                administratorName: "HealthEquity",
+                version: "2026.1",
+                supportedSubmissionMode: .guidedPacket,
+                requiredFields: ["Account holder name", "Date of service", "Provider or merchant", "Claim amount"],
+                evidenceRequirements: [
+                    "Itemized receipt showing merchant, purchase date, eligible item, and amount",
+                    "Proof of payment when the receipt does not show a paid card transaction"
+                ],
+                instructions: ["Submit through the HealthEquity member portal after reviewing the attached itemized evidence."]
+            )
+        }
+
+        if normalizedName.contains("inspira") {
+            return ClaimAdministratorTemplate(
+                administratorName: "Inspira",
+                version: "2026.1",
+                supportedSubmissionMode: .inAppSubmission,
+                requiredFields: ["Participant name", "Service date", "Expense type", "Claim amount"],
+                evidenceRequirements: [
+                    "Itemized receipt with merchant, date, item description, and amount",
+                    "Card transaction match or paid invoice"
+                ],
+                instructions: ["Use the Inspira claim flow when available; keep the guided packet as the fallback attachment."]
+            )
+        }
+
+        if normalizedName.contains("wex") {
+            return ClaimAdministratorTemplate(
+                administratorName: "WEX",
+                version: "2026.1",
+                supportedSubmissionMode: .guidedPacket,
+                requiredFields: ["Employee name", "Service date", "Provider or store", "Claim amount"],
+                evidenceRequirements: [
+                    "Itemized receipt or explanation of benefits",
+                    "Proof the user paid the expense"
+                ],
+                instructions: ["Attach this packet in the WEX benefits portal and mark the claim submitted once uploaded."]
+            )
+        }
+
+        return ClaimAdministratorTemplate(
+            administratorName: displayName,
+            version: "generic-2026.1",
+            supportedSubmissionMode: .guidedPacket,
+            requiredFields: ["Account holder name", "Date of service", "Provider or merchant", "Claim amount"],
+            evidenceRequirements: ["Itemized receipt showing merchant, purchase date, eligible item, and amount"],
+            instructions: ["Submit this packet in the administrator portal, then return to SAVE so Kai can track the status."]
+        )
+    }
+}
+
 struct ClaimPacketDocument: Hashable {
     let filename: String
     let title: String
     let text: String
     let total: Double
     let lineItems: [ReceiptLineItem]
+    let template: ClaimAdministratorTemplate
 }
 
 struct ClaimPacketDocumentBuilder {
     func build(from packet: ClaimPacket) -> ClaimPacketDocument {
+        let template = ClaimAdministratorTemplateLibrary.template(for: packet.administratorName)
         let title = "\(packet.administratorName) claim packet"
         let itemLines = packet.lineItems.map { item in
             "\(item.name) - \(item.amount.currency) - \(item.eligibility.rawValue)"
@@ -18,9 +88,19 @@ struct ClaimPacketDocumentBuilder {
 
         let text = ([
             title,
+            "Template: \(template.administratorName) \(template.version)",
             "Submission mode: \(packet.submissionMode.rawValue)",
             "Status: \(packet.status.rawValue)",
             "Total claim amount: \(packet.total.currency)",
+            "",
+            "Required fields:"
+        ] + Self.bulletLines(template.requiredFields) + [
+            "",
+            "Evidence requirements:"
+        ] + Self.bulletLines(template.evidenceRequirements) + [
+            "",
+            "Administrator instructions:"
+        ] + Self.bulletLines(template.instructions) + [
             "",
             "Line items:"
         ] + itemLines).joined(separator: "\n")
@@ -30,8 +110,13 @@ struct ClaimPacketDocumentBuilder {
             title: title,
             text: text,
             total: packet.total,
-            lineItems: packet.lineItems
+            lineItems: packet.lineItems,
+            template: template
         )
+    }
+
+    private static func bulletLines(_ values: [String]) -> [String] {
+        values.map { "- \($0)" }
     }
 
     private static func slug(_ value: String) -> String {

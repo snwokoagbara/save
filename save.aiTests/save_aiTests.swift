@@ -167,6 +167,34 @@ struct save_aiTests {
         #expect(document.text.contains("Prescription lenses - $315.41 - FSA eligible"))
     }
 
+    @Test func claimPacketDocumentIncludesAdministratorTemplateInstructions() async throws {
+        let packet = ClaimPacket(
+            administratorName: "HealthEquity",
+            lineItems: [
+                ReceiptLineItem(name: "FSA Sunscreen SPF 50", amount: 18.77, eligibility: .fsaEligible, confidence: 0.96)
+            ],
+            submissionMode: .guidedPacket,
+            status: .ready
+        )
+
+        let document = ClaimPacketDocumentBuilder().build(from: packet)
+
+        #expect(document.template.version == "2026.1")
+        #expect(document.text.contains("Template: HealthEquity 2026.1"))
+        #expect(document.text.contains("- Account holder name"))
+        #expect(document.text.contains("- Itemized receipt showing merchant, purchase date, eligible item, and amount"))
+        #expect(document.text.contains("Submit through the HealthEquity member portal after reviewing the attached itemized evidence."))
+    }
+
+    @Test func administratorTemplateLibraryFallsBackToGenericGuidedPacket() async throws {
+        let template = ClaimAdministratorTemplateLibrary.template(for: "Unknown Admin")
+
+        #expect(template.administratorName == "Unknown Admin")
+        #expect(template.version == "generic-2026.1")
+        #expect(template.supportedSubmissionMode == .guidedPacket)
+        #expect(template.requiredFields.contains("Claim amount"))
+    }
+
     @Test func mvpTaxExportCreatesArtifact() async throws {
         var state = SaveMVPState()
 
@@ -438,6 +466,11 @@ struct save_aiTests {
         let lineItemBody = try #require(String(data: lineItemData, encoding: .utf8))
         #expect(lineItemBody.contains("\"normalized_name\":\"Bandage roll\""))
         #expect(lineItemBody.contains("\"eligibility\":\"fsa_eligible\""))
+
+        let claimPacketRequest = try #require(client.requests.first { $0.url?.lastPathComponent == "claim_packets" })
+        let claimPacketData = try #require(claimPacketRequest.httpBody)
+        let claimPacketBody = try #require(String(data: claimPacketData, encoding: .utf8))
+        #expect(claimPacketBody.contains("\"template_version\":\"2026.1\""))
     }
 
     @Test func supabaseFirstClassProgressSyncerBuildsClaimPacketItemRows() async throws {
