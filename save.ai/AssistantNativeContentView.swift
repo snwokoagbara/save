@@ -266,9 +266,9 @@ struct AssistantNativeContentView: View {
         }
         .sheet(item: $claimPacketRoute) { route in
             if let packet = state.claimPackets.first(where: { $0.id == route.packetID }) {
-                ClaimPacketDetailSheet(packet: packet) { packet in
+                ClaimPacketDetailSheet(packet: packet) { packet, submission in
                     updateState {
-                        $0.submitClaimPacket(packet.id)
+                        $0.submitClaimPacket(packet.id, submission: submission)
                     }
                 } markReimbursed: { packet in
                     updateState {
@@ -1464,10 +1464,13 @@ private struct AssistantCaseRail: View {
 
 private struct ClaimPacketDetailSheet: View {
     let packet: ClaimPacket
-    let submit: (ClaimPacket) -> Void
+    let submit: (ClaimPacket, ClaimSubmission) -> Void
     let markReimbursed: (ClaimPacket) -> Void
     @State private var pdfURL: URL?
     @State private var errorMessage: String?
+    @State private var submissionMethod: ClaimSubmissionMethod = .administratorPortal
+    @State private var confirmationNumber = ""
+    @State private var submissionNotes = ""
 
     private var document: ClaimPacketDocument {
         ClaimPacketDocumentBuilder().build(from: packet)
@@ -1547,12 +1550,30 @@ private struct ClaimPacketDetailSheet: View {
                 Section("Submission tracking") {
                     switch packet.status {
                     case .ready:
+                        Picker("Method", selection: $submissionMethod) {
+                            ForEach(ClaimSubmissionMethod.allCases) { method in
+                                Text(method.rawValue).tag(method)
+                            }
+                        }
+                        TextField("Confirmation number", text: $confirmationNumber)
+                            .textInputAutocapitalization(.characters)
+                        TextField("Notes", text: $submissionNotes, axis: .vertical)
+                            .lineLimit(2...4)
                         Button {
-                            submit(packet)
+                            submit(packet, currentSubmission)
                         } label: {
                             Label("Mark submitted by user", systemImage: "paperplane.fill")
                         }
                     case .submittedByUser:
+                        if let submission = packet.submission {
+                            LabeledContent("Method", value: submission.method.rawValue)
+                            LabeledContent("Confirmation", value: submission.confirmationNumber.isEmpty ? "Not recorded" : submission.confirmationNumber)
+                            if !submission.notes.isEmpty {
+                                Text(submission.notes)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Label("Kai is tracking reimbursement status", systemImage: "clock.badge.checkmark.fill")
                             .foregroundStyle(.secondary)
                         Button {
@@ -1577,6 +1598,15 @@ private struct ClaimPacketDetailSheet: View {
                 }
             }
         }
+    }
+
+    private var currentSubmission: ClaimSubmission {
+        ClaimSubmission(
+            submittedAt: Date(),
+            method: submissionMethod,
+            confirmationNumber: confirmationNumber.trimmingCharacters(in: .whitespacesAndNewlines),
+            notes: submissionNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     private func writePDF() {

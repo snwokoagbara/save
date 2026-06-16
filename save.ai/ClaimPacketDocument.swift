@@ -107,7 +107,7 @@ struct ClaimPacketDocumentBuilder {
             "\(item.name) - \(item.amount.currency) - \(item.eligibility.rawValue)"
         }
 
-        let text = ([
+        var sections = [
             title,
             "Template: \(template.administratorName) \(template.version)",
             "Submission mode: \(packet.submissionMode.rawValue)",
@@ -124,10 +124,25 @@ struct ClaimPacketDocumentBuilder {
         ] + Self.bulletLines(template.submissionChecklist) + [
             "",
             "Administrator instructions:"
-        ] + Self.bulletLines(template.instructions) + [
+        ] + Self.bulletLines(template.instructions)
+
+        if let submission = packet.submission {
+            sections += [
+                "",
+                "Submission details:",
+                "Submitted at: \(Self.submissionDateFormatter.string(from: submission.submittedAt))",
+                "Method: \(submission.method.rawValue)",
+                "Confirmation: \(submission.confirmationNumber)",
+                "Notes: \(submission.notes)"
+            ]
+        }
+
+        sections += [
             "",
             "Line items:"
-        ] + itemLines).joined(separator: "\n")
+        ] + itemLines
+
+        let text = sections.joined(separator: "\n")
 
         return ClaimPacketDocument(
             filename: "save-claim-\(Self.slug(packet.administratorName)).pdf",
@@ -155,6 +170,13 @@ struct ClaimPacketDocumentBuilder {
         let collapsed = String(scalars).split(separator: "-").joined(separator: "-")
         return collapsed.isEmpty ? "administrator" : collapsed
     }
+
+    private static let submissionDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
 }
 
 struct ClaimPacketPDFRenderer {

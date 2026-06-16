@@ -37,6 +37,7 @@ struct SaveMVPPersistedState: Codable, Equatable {
     var receiptLineItemEdits: [ReceiptLineItemEdit]
     var receiptLineItemClassifications: [ReceiptLineItemClassification]
     var submittedClaimAdministratorNames: Set<String>
+    var claimSubmissionsByAdministratorName: [String: ClaimSubmission]
     var reimbursedClaimAdministratorNames: Set<String>
     var receipts: [Receipt]?
     var claimPackets: [ClaimPacket]?
@@ -54,6 +55,7 @@ struct SaveMVPPersistedState: Codable, Equatable {
         receiptLineItemEdits: [ReceiptLineItemEdit] = [],
         receiptLineItemClassifications: [ReceiptLineItemClassification] = [],
         submittedClaimAdministratorNames: Set<String> = [],
+        claimSubmissionsByAdministratorName: [String: ClaimSubmission] = [:],
         reimbursedClaimAdministratorNames: Set<String> = [],
         receipts: [Receipt]? = nil,
         claimPackets: [ClaimPacket]? = nil,
@@ -70,6 +72,7 @@ struct SaveMVPPersistedState: Codable, Equatable {
         self.receiptLineItemEdits = receiptLineItemEdits
         self.receiptLineItemClassifications = receiptLineItemClassifications
         self.submittedClaimAdministratorNames = submittedClaimAdministratorNames
+        self.claimSubmissionsByAdministratorName = claimSubmissionsByAdministratorName
         self.reimbursedClaimAdministratorNames = reimbursedClaimAdministratorNames
         self.receipts = receipts
         self.claimPackets = claimPackets
@@ -88,6 +91,7 @@ struct SaveMVPPersistedState: Codable, Equatable {
         case receiptLineItemEdits
         case receiptLineItemClassifications
         case submittedClaimAdministratorNames
+        case claimSubmissionsByAdministratorName
         case reimbursedClaimAdministratorNames
         case receipts
         case claimPackets
@@ -108,6 +112,7 @@ struct SaveMVPPersistedState: Codable, Equatable {
         receiptLineItemEdits = try container.decodeIfPresent([ReceiptLineItemEdit].self, forKey: .receiptLineItemEdits) ?? []
         receiptLineItemClassifications = try container.decodeIfPresent([ReceiptLineItemClassification].self, forKey: .receiptLineItemClassifications) ?? []
         submittedClaimAdministratorNames = try container.decodeIfPresent(Set<String>.self, forKey: .submittedClaimAdministratorNames) ?? []
+        claimSubmissionsByAdministratorName = try container.decodeIfPresent([String: ClaimSubmission].self, forKey: .claimSubmissionsByAdministratorName) ?? [:]
         reimbursedClaimAdministratorNames = try container.decodeIfPresent(Set<String>.self, forKey: .reimbursedClaimAdministratorNames) ?? []
         receipts = try container.decodeIfPresent([Receipt].self, forKey: .receipts)
         claimPackets = try container.decodeIfPresent([ClaimPacket].self, forKey: .claimPackets)
@@ -640,7 +645,7 @@ struct SupabaseRESTSaveMVPFirstClassProgressLoader: SaveMVPRemoteProgressLoading
         )
         let claimPackets: [FirstClassClaimPacketResponse] = try await loadRows(
             table: "claim_packets",
-            select: "id,administrator_name,status,submission_mode,claim_amount",
+            select: "id,administrator_name,status,submission_mode,claim_amount,submitted_at,submission_method,submission_confirmation_number,submission_note",
             extraQueryItems: [URLQueryItem(name: "order", value: "created_at.asc")]
         )
         let claimPacketItems: [FirstClassClaimPacketItemResponse] = try await loadRows(
@@ -754,7 +759,8 @@ struct SupabaseRESTSaveMVPFirstClassProgressLoader: SaveMVPRemoteProgressLoading
                 administratorName: packet.administratorName,
                 lineItems: packetLineItems,
                 submissionMode: SubmissionMode(supabaseValue: packet.submissionMode) ?? .guidedPacket,
-                status: ClaimStatus(supabaseValue: packet.status) ?? .draft
+                status: ClaimStatus(supabaseValue: packet.status) ?? .draft,
+                submission: packet.submission
             )
         }
         let generatedTaxExport = taxExports.first { $0.status == "generated" }
@@ -836,6 +842,10 @@ struct SupabaseRESTSaveMVPFirstClassProgressLoader: SaveMVPRemoteProgressLoading
         let status: String
         let submissionMode: String
         let claimAmount: Double
+        let submittedAt: Date?
+        let submissionMethod: String?
+        let submissionConfirmationNumber: String?
+        let submissionNote: String?
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -843,6 +853,24 @@ struct SupabaseRESTSaveMVPFirstClassProgressLoader: SaveMVPRemoteProgressLoading
             case status
             case submissionMode = "submission_mode"
             case claimAmount = "claim_amount"
+            case submittedAt = "submitted_at"
+            case submissionMethod = "submission_method"
+            case submissionConfirmationNumber = "submission_confirmation_number"
+            case submissionNote = "submission_note"
+        }
+
+        var submission: ClaimSubmission? {
+            guard let submittedAt,
+                  let method = submissionMethod.flatMap(ClaimSubmissionMethod.init(supabaseValue:)) else {
+                return nil
+            }
+
+            return ClaimSubmission(
+                submittedAt: submittedAt,
+                method: method,
+                confirmationNumber: submissionConfirmationNumber ?? "",
+                notes: submissionNote ?? ""
+            )
         }
     }
 
@@ -1090,7 +1118,11 @@ private struct SupabaseFirstClassRows {
                 status: packet.status.supabaseValue,
                 submissionMode: packet.submissionMode.supabaseValue,
                 claimAmount: packet.total,
-                templateVersion: template.version
+                templateVersion: template.version,
+                submittedAt: packet.submission?.submittedAt,
+                submissionMethod: packet.submission?.method.supabaseValue,
+                submissionConfirmationNumber: packet.submission?.confirmationNumber,
+                submissionNote: packet.submission?.notes
             )
         }
         claimPacketItems = claimPacketItemRows
@@ -1160,6 +1192,10 @@ private struct SupabaseClaimPacketRow: Encodable {
     let submissionMode: String
     let claimAmount: Double
     let templateVersion: String
+    let submittedAt: Date?
+    let submissionMethod: String?
+    let submissionConfirmationNumber: String?
+    let submissionNote: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1169,6 +1205,10 @@ private struct SupabaseClaimPacketRow: Encodable {
         case submissionMode = "submission_mode"
         case claimAmount = "claim_amount"
         case templateVersion = "template_version"
+        case submittedAt = "submitted_at"
+        case submissionMethod = "submission_method"
+        case submissionConfirmationNumber = "submission_confirmation_number"
+        case submissionNote = "submission_note"
     }
 }
 
@@ -1355,6 +1395,36 @@ private extension SubmissionMode {
             return "guided_packet"
         case .inAppSubmission:
             return "in_app_submission"
+        }
+    }
+}
+
+private extension ClaimSubmissionMethod {
+    init?(supabaseValue: String) {
+        switch supabaseValue {
+        case "administrator_portal":
+            self = .administratorPortal
+        case "in_app":
+            self = .inApp
+        case "email":
+            self = .email
+        case "other":
+            self = .other
+        default:
+            return nil
+        }
+    }
+
+    var supabaseValue: String {
+        switch self {
+        case .administratorPortal:
+            return "administrator_portal"
+        case .inApp:
+            return "in_app"
+        case .email:
+            return "email"
+        case .other:
+            return "other"
         }
     }
 }

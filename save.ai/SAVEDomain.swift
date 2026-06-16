@@ -103,6 +103,22 @@ enum SubmissionMode: String, Codable {
     case inAppSubmission = "In-app submission"
 }
 
+enum ClaimSubmissionMethod: String, CaseIterable, Codable, Identifiable {
+    case administratorPortal = "Administrator portal"
+    case inApp = "In-app submission"
+    case email = "Email"
+    case other = "Other"
+
+    var id: String { rawValue }
+}
+
+struct ClaimSubmission: Codable, Hashable {
+    let submittedAt: Date
+    let method: ClaimSubmissionMethod
+    let confirmationNumber: String
+    let notes: String
+}
+
 enum ClaimStatus: String, CaseIterable, Codable, Identifiable {
     case draft = "Draft"
     case ready = "Ready"
@@ -138,19 +154,22 @@ struct ClaimPacket: Codable, Identifiable, Hashable {
     let lineItems: [ReceiptLineItem]
     let submissionMode: SubmissionMode
     var status: ClaimStatus
+    var submission: ClaimSubmission?
 
     init(
         id: UUID = UUID(),
         administratorName: String,
         lineItems: [ReceiptLineItem],
         submissionMode: SubmissionMode,
-        status: ClaimStatus = .ready
+        status: ClaimStatus = .ready,
+        submission: ClaimSubmission? = nil
     ) {
         self.id = id
         self.administratorName = administratorName
         self.lineItems = lineItems
         self.submissionMode = submissionMode
         self.status = status
+        self.submission = submission
     }
 
     var total: Double {

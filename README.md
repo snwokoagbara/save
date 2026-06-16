@@ -9,7 +9,7 @@ SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA
 - Receipt import through sample data, photo picker, and Vision OCR.
 - Receipt review and line-item eligibility classification.
 - Receipt metadata and line-item editing during review.
-- HSA/FSA claim packet preparation and status tracking.
+- HSA/FSA claim packet preparation, submission tracking, and reimbursement status tracking.
 - Local administrator templates for HealthEquity, Inspira, WEX, and a generic guided-packet fallback.
 - Claim packet PDF export through the iOS share sheet.
 - Schedule A medical-expense CSV/PDF export through the iOS share sheet.
@@ -58,6 +58,7 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 
 - June 14, 2026: Signed-in simulator QA against the live Supabase project synced 1 progress snapshot, 4 receipts, 7 receipt line items, 2 claim packets, and 1 tax export for the QA account.
 - June 15, 2026: Signed-in simulator QA restored first-class Supabase rows, ignored stale claim packets with no joined items, and showed 3 claim packets in the app while the QA database still retained 4 historical claim packet rows and 3 claim packet item rows.
+- June 16, 2026: Simulator QA verified HealthEquity claim submission tracking from a ready packet through submitted state, including method, confirmation number, notes, and PDF submission-detail text.
 
 ## V1 Next Steps
 

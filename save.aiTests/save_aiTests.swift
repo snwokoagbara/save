@@ -136,6 +136,24 @@ struct save_aiTests {
         #expect(state.claimPackets.first?.status == .submittedByUser)
     }
 
+    @Test func mvpSubmitClaimPacketStoresSubmissionDetails() async throws {
+        var state = SaveMVPState()
+        let submittedAt = Date(timeIntervalSince1970: 1_800_002_400)
+        let submission = ClaimSubmission(
+            submittedAt: submittedAt,
+            method: .administratorPortal,
+            confirmationNumber: "HE-12345",
+            notes: "Uploaded through HealthEquity portal."
+        )
+
+        state.prepareFirstDraftClaim()
+        let packetID = try #require(state.claimPackets.first?.id)
+        state.submitClaimPacket(packetID, submission: submission)
+
+        #expect(state.claimPackets.first?.status == .submittedByUser)
+        #expect(state.claimPackets.first?.submission == submission)
+    }
+
     @Test func mvpMarkClaimReimbursedMovesSubmittedPacketToReimbursed() async throws {
         var state = SaveMVPState()
 
@@ -204,6 +222,30 @@ struct save_aiTests {
         #expect(document.text.contains("- Return to SAVE and mark the packet submitted after upload."))
     }
 
+    @Test func claimPacketDocumentIncludesSubmissionDetailsWhenSubmitted() async throws {
+        let packet = ClaimPacket(
+            administratorName: "HealthEquity",
+            lineItems: [
+                ReceiptLineItem(name: "FSA Sunscreen SPF 50", amount: 18.77, eligibility: .fsaEligible, confidence: 0.96)
+            ],
+            submissionMode: .guidedPacket,
+            status: .submittedByUser,
+            submission: ClaimSubmission(
+                submittedAt: Date(timeIntervalSince1970: 1_800_002_400),
+                method: .administratorPortal,
+                confirmationNumber: "HE-12345",
+                notes: "Uploaded through HealthEquity portal."
+            )
+        )
+
+        let document = ClaimPacketDocumentBuilder().build(from: packet)
+
+        #expect(document.text.contains("Submission details:"))
+        #expect(document.text.contains("Method: Administrator portal"))
+        #expect(document.text.contains("Confirmation: HE-12345"))
+        #expect(document.text.contains("Notes: Uploaded through HealthEquity portal."))
+    }
+
     @Test func administratorTemplateLibraryFallsBackToGenericGuidedPacket() async throws {
         let template = ClaimAdministratorTemplateLibrary.template(for: "Unknown Admin")
 
@@ -267,6 +309,24 @@ struct save_aiTests {
         let restored = SaveMVPState(persisted: state.persisted)
 
         #expect(restored.claimPackets.first?.status == .submittedByUser)
+    }
+
+    @Test func mvpProgressSnapshotRestoresClaimSubmissionDetails() async throws {
+        var state = SaveMVPState()
+        let submission = ClaimSubmission(
+            submittedAt: Date(timeIntervalSince1970: 1_800_002_400),
+            method: .administratorPortal,
+            confirmationNumber: "HE-12345",
+            notes: "Uploaded through HealthEquity portal."
+        )
+
+        state.prepareFirstDraftClaim()
+        let packetID = try #require(state.claimPackets.first?.id)
+        state.submitClaimPacket(packetID, submission: submission)
+
+        let restored = SaveMVPState(persisted: state.persisted)
+
+        #expect(restored.claimPackets.first?.submission == submission)
     }
 
     @Test func mvpProgressSnapshotRestoresReimbursedClaimPackets() async throws {
@@ -455,6 +515,16 @@ struct save_aiTests {
         let importedItem = try #require(state.receipts.first?.lineItems.first)
         state.classifyLineItem(importedItem.id, as: .fsaEligible)
         state.prepareFirstDraftClaim()
+        let packetID = try #require(state.claimPackets.first?.id)
+        state.submitClaimPacket(
+            packetID,
+            submission: ClaimSubmission(
+                submittedAt: Date(timeIntervalSince1970: 1_800_002_400),
+                method: .administratorPortal,
+                confirmationNumber: "HE-12345",
+                notes: "Uploaded through HealthEquity portal."
+            )
+        )
         state.exportTaxReport()
 
         syncer.push(
@@ -489,6 +559,10 @@ struct save_aiTests {
         let claimPacketData = try #require(claimPacketRequest.httpBody)
         let claimPacketBody = try #require(String(data: claimPacketData, encoding: .utf8))
         #expect(claimPacketBody.contains("\"template_version\":\"2026.1\""))
+        #expect(claimPacketBody.contains("\"submitted_at\":\"2027-01-15T08:40:00Z\""))
+        #expect(claimPacketBody.contains("\"submission_method\":\"administrator_portal\""))
+        #expect(claimPacketBody.contains("\"submission_confirmation_number\":\"HE-12345\""))
+        #expect(claimPacketBody.contains("\"submission_note\":\"Uploaded through HealthEquity portal.\""))
     }
 
     @Test func supabaseFirstClassProgressSyncerBuildsClaimPacketItemRows() async throws {
@@ -709,9 +783,13 @@ struct save_aiTests {
               {
                 "id": "\(claimPacketID.uuidString)",
                 "administrator_name": "HealthEquity",
-                "status": "ready",
+                "status": "submitted_by_user",
                 "submission_mode": "guided_packet",
-                "claim_amount": 8.99
+                "claim_amount": 8.99,
+                "submitted_at": "2027-01-15T08:40:00Z",
+                "submission_method": "administrator_portal",
+                "submission_confirmation_number": "HE-12345",
+                "submission_note": "Uploaded through HealthEquity portal."
               }
             ]
             """.data(using: .utf8)!,
@@ -759,6 +837,11 @@ struct save_aiTests {
         #expect(state.receipts.first?.lineItems.first?.eligibility == .fsaEligible)
         #expect(state.claimPackets.first?.id == claimPacketID)
         #expect(state.claimPackets.first?.lineItems.first?.id == lineItemID)
+        let submission = try #require(state.claimPackets.first?.submission)
+        #expect(submission.submittedAt == Date(timeIntervalSince1970: 1_800_002_400))
+        #expect(submission.method == .administratorPortal)
+        #expect(submission.confirmationNumber == "HE-12345")
+        #expect(submission.notes == "Uploaded through HealthEquity portal.")
         #expect(state.taxReportArtifact?.total == 8.99)
     }
 

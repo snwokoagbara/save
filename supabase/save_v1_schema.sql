@@ -181,6 +181,13 @@ create table if not exists public.claim_packets (
   generated_pdf_bucket_id text,
   generated_pdf_object_path text,
   template_version text,
+  submitted_at timestamptz,
+  submission_method text check (
+    submission_method is null
+    or submission_method in ('administrator_portal', 'in_app', 'email', 'other')
+  ),
+  submission_confirmation_number text,
+  submission_note text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

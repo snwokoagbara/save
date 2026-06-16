@@ -46,6 +46,7 @@ struct SaveMVPState {
     private var receiptEdits: [ReceiptEdit]
     private var receiptLineItemEdits: [ReceiptLineItemEdit]
     private var submittedClaimAdministratorNames: Set<String>
+    private var claimSubmissionsByAdministratorName: [String: ClaimSubmission]
     private var reimbursedClaimAdministratorNames: Set<String>
     private var usesFullDomainPersistence: Bool
 
@@ -63,6 +64,7 @@ struct SaveMVPState {
         receiptEdits: [ReceiptEdit] = [],
         receiptLineItemEdits: [ReceiptLineItemEdit] = [],
         submittedClaimAdministratorNames: Set<String> = [],
+        claimSubmissionsByAdministratorName: [String: ClaimSubmission] = [:],
         reimbursedClaimAdministratorNames: Set<String> = [],
         usesFullDomainPersistence: Bool = false
     ) {
@@ -79,6 +81,7 @@ struct SaveMVPState {
         self.receiptEdits = receiptEdits
         self.receiptLineItemEdits = receiptLineItemEdits
         self.submittedClaimAdministratorNames = submittedClaimAdministratorNames
+        self.claimSubmissionsByAdministratorName = claimSubmissionsByAdministratorName
         self.reimbursedClaimAdministratorNames = reimbursedClaimAdministratorNames
         self.usesFullDomainPersistence = usesFullDomainPersistence
     }
@@ -100,6 +103,7 @@ struct SaveMVPState {
                 receiptEdits: persisted.receiptEdits,
                 receiptLineItemEdits: persisted.receiptLineItemEdits,
                 submittedClaimAdministratorNames: persisted.submittedClaimAdministratorNames,
+                claimSubmissionsByAdministratorName: persisted.claimSubmissionsByAdministratorName,
                 reimbursedClaimAdministratorNames: persisted.reimbursedClaimAdministratorNames,
                 usesFullDomainPersistence: true
             )
@@ -122,7 +126,10 @@ struct SaveMVPState {
         }
 
         persisted.submittedClaimAdministratorNames.forEach { administratorName in
-            submitClaimPacket(administratorName: administratorName)
+            submitClaimPacket(
+                administratorName: administratorName,
+                submission: persisted.claimSubmissionsByAdministratorName[administratorName]
+            )
         }
 
         persisted.reimbursedClaimAdministratorNames.forEach { administratorName in
@@ -163,6 +170,7 @@ struct SaveMVPState {
             receiptLineItemEdits: receiptLineItemEdits,
             receiptLineItemClassifications: receiptLineItemClassifications,
             submittedClaimAdministratorNames: submittedClaimAdministratorNames,
+            claimSubmissionsByAdministratorName: claimSubmissionsByAdministratorName,
             reimbursedClaimAdministratorNames: reimbursedClaimAdministratorNames,
             receipts: usesFullDomainPersistence ? receipts : nil,
             claimPackets: usesFullDomainPersistence ? claimPackets : nil,
@@ -299,7 +307,15 @@ struct SaveMVPState {
             return
         }
 
-        submitClaimPacket(at: index)
+        submitClaimPacket(at: index, submission: nil)
+    }
+
+    mutating func submitClaimPacket(_ id: UUID, submission: ClaimSubmission) {
+        guard let index = claimPackets.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        submitClaimPacket(at: index, submission: submission)
     }
 
     mutating func markClaimReimbursed(_ id: UUID) {
@@ -537,21 +553,25 @@ struct SaveMVPState {
         receiptLineItemEdits.append(edit)
     }
 
-    private mutating func submitClaimPacket(administratorName: String) {
+    private mutating func submitClaimPacket(administratorName: String, submission: ClaimSubmission? = nil) {
         guard let index = claimPackets.firstIndex(where: { $0.administratorName == administratorName }) else {
             return
         }
 
-        submitClaimPacket(at: index)
+        submitClaimPacket(at: index, submission: submission)
     }
 
-    private mutating func submitClaimPacket(at index: Int) {
+    private mutating func submitClaimPacket(at index: Int, submission: ClaimSubmission?) {
         guard claimPackets[index].status.canTransition(to: .submittedByUser) else {
             return
         }
 
         claimPackets[index].status = .submittedByUser
         submittedClaimAdministratorNames.insert(claimPackets[index].administratorName)
+        if let submission {
+            claimPackets[index].submission = submission
+            claimSubmissionsByAdministratorName[claimPackets[index].administratorName] = submission
+        }
     }
 
     private mutating func markClaimReimbursed(administratorName: String) {
