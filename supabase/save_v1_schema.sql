@@ -86,12 +86,24 @@ create table if not exists public.source_connections (
   kind public.source_connection_kind not null,
   status public.source_connection_status not null default 'not_connected',
   provider_account_label text,
+  provider_subject text,
+  oauth_scopes text[] not null default '{}',
+  provider_metadata jsonb not null default '{}'::jsonb,
   last_synced_at timestamptz,
   error_code text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (user_id, kind)
 );
+
+alter table public.source_connections
+add column if not exists provider_subject text;
+
+alter table public.source_connections
+add column if not exists oauth_scopes text[] not null default '{}';
+
+alter table public.source_connections
+add column if not exists provider_metadata jsonb not null default '{}'::jsonb;
 
 create table if not exists public.receipts (
   id uuid primary key default gen_random_uuid(),

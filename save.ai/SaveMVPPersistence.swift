@@ -155,6 +155,33 @@ protocol ClaimAdministratorTemplateLoading {
     func load() async throws -> [ClaimAdministratorTemplate]
 }
 
+struct GmailAuthorizationStart: Equatable {
+    let authorizationURL: URL
+    let state: String
+}
+
+enum GmailConnectionStatus: String, Codable, Equatable {
+    case notConnected = "not_connected"
+    case connected
+    case failed
+    case revoked
+}
+
+struct GmailConnection: Equatable {
+    let status: GmailConnectionStatus
+    let accountLabel: String?
+    let lastSyncedAt: Date?
+    let errorCode: String?
+}
+
+protocol GmailConnectionStarting {
+    func startAuthorization() async throws -> GmailAuthorizationStart
+}
+
+protocol GmailConnectionLoading {
+    func load() async throws -> GmailConnection?
+}
+
 struct SupabaseSaveMVPConfiguration: Equatable {
     let projectURL: URL
     let publishableKey: String
@@ -698,6 +725,152 @@ struct SupabaseRESTClaimAdministratorTemplateLoader: ClaimAdministratorTemplateL
                 evidenceRequirements: evidenceRequirements,
                 submissionChecklist: submissionChecklist ?? [],
                 instructions: rowInstructions
+            )
+        }
+    }
+}
+
+struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let redirectURI: URL
+    private let httpClient: SupabaseAuthHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        redirectURI: URL,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.redirectURI = redirectURI
+        self.httpClient = httpClient
+    }
+
+    func startAuthorization() async throws -> GmailAuthorizationStart {
+        guard let request = makeRequest() else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        let data = try await httpClient.data(for: request)
+        let response = try JSONDecoder.saveMVP.decode(StartResponse.self, from: data)
+        return try response.start()
+    }
+
+    private func makeRequest() -> URLRequest? {
+        let url = configuration.projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("gmail-oauth-start")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = try? JSONEncoder.saveMVP.encode(StartPayload(redirectURI: redirectURI.absoluteString))
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private struct StartPayload: Encodable {
+        let redirectURI: String
+
+        enum CodingKeys: String, CodingKey {
+            case redirectURI = "redirect_uri"
+        }
+    }
+
+    private struct StartResponse: Decodable {
+        let authorizationURL: String
+        let state: String
+
+        enum CodingKeys: String, CodingKey {
+            case authorizationURL = "authorization_url"
+            case state
+        }
+
+        func start() throws -> GmailAuthorizationStart {
+            guard let url = URL(string: authorizationURL) else {
+                throw SupabaseAuthError.invalidURL
+            }
+
+            return GmailAuthorizationStart(authorizationURL: url, state: state)
+        }
+    }
+}
+
+struct SupabaseRESTGmailConnectionLoader: GmailConnectionLoading {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let httpClient: SupabaseAuthHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.httpClient = httpClient
+    }
+
+    func load() async throws -> GmailConnection? {
+        guard let request = makeRequest() else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        let data = try await httpClient.data(for: request)
+        return try JSONDecoder.saveMVP.decode([ConnectionResponse].self, from: data).first?.connection
+    }
+
+    private func makeRequest() -> URLRequest? {
+        var components = URLComponents(
+            url: configuration.projectURL
+                .appendingPathComponent("rest")
+                .appendingPathComponent("v1")
+                .appendingPathComponent("source_connections"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "select", value: "status,provider_account_label,last_synced_at,error_code"),
+            URLQueryItem(name: "user_id", value: "eq.\(session.userID.uuidString.lowercased())"),
+            URLQueryItem(name: "kind", value: "eq.gmail"),
+            URLQueryItem(name: "limit", value: "1")
+        ]
+
+        guard let url = components?.url else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private struct ConnectionResponse: Decodable {
+        let status: GmailConnectionStatus
+        let providerAccountLabel: String?
+        let lastSyncedAt: Date?
+        let errorCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case status
+            case providerAccountLabel = "provider_account_label"
+            case lastSyncedAt = "last_synced_at"
+            case errorCode = "error_code"
+        }
+
+        var connection: GmailConnection {
+            GmailConnection(
+                status: status,
+                accountLabel: providerAccountLabel,
+                lastSyncedAt: lastSyncedAt,
+                errorCode: errorCode
             )
         }
     }

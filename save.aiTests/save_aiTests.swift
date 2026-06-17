@@ -331,6 +331,87 @@ struct save_aiTests {
         ])
     }
 
+    @Test func supabaseGmailConnectionControllerBuildsAuthenticatedStartRequest() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth?state=gmail-state",
+              "state": "gmail-state"
+            }
+            """.data(using: .utf8)!
+        )
+        let controller = SupabaseRESTGmailConnectionController(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            redirectURI: URL(string: "saveai://gmail-oauth-callback")!,
+            httpClient: client
+        )
+
+        let start = try await controller.startAuthorization()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/functions/v1/gmail-oauth-start")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let body = try #require(request.httpBody)
+        let json = try #require(String(data: body, encoding: .utf8))
+        #expect(json.contains("\"redirect_uri\":\"saveai:\\/\\/gmail-oauth-callback\""))
+        #expect(start == GmailAuthorizationStart(
+            authorizationURL: URL(string: "https://accounts.google.com/o/oauth2/v2/auth?state=gmail-state")!,
+            state: "gmail-state"
+        ))
+    }
+
+    @Test func supabaseGmailConnectionLoaderDecodesSourceConnectionStatus() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            [
+              {
+                "status": "connected",
+                "provider_account_label": "kai@example.com",
+                "last_synced_at": "2026-06-17T06:00:00Z",
+                "error_code": null
+              }
+            ]
+            """.data(using: .utf8)!
+        )
+        let loader = SupabaseRESTGmailConnectionLoader(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let connection = try await loader.load()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/rest/v1/source_connections?select=status,provider_account_label,last_synced_at,error_code&user_id=eq.00000000-0000-0000-0000-000000000789&kind=eq.gmail&limit=1")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(connection == GmailConnection(
+            status: .connected,
+            accountLabel: "kai@example.com",
+            lastSyncedAt: Date(timeIntervalSince1970: 1_797_136_400),
+            errorCode: nil
+        ))
+    }
+
     @Test func mvpTaxExportCreatesArtifact() async throws {
         var state = SaveMVPState()
 
