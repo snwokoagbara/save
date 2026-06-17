@@ -435,6 +435,40 @@ struct save_aiTests {
         #expect(GmailOAuthCallback(url: URL(string: "saveai://gmail-oauth-callback?state=gmail-state")!) == nil)
     }
 
+    @Test func supabaseGmailReceiptImporterBuildsAuthenticatedImportRequest() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "imported_receipt_count": 2,
+              "imported_line_item_count": 2
+            }
+            """.data(using: .utf8)!
+        )
+        let importer = SupabaseRESTGmailReceiptImporter(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let result = try await importer.importReceipts()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/functions/v1/gmail-receipt-import")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(result == GmailReceiptImportResult(importedReceiptCount: 2, importedLineItemCount: 2))
+    }
+
     @Test func supabaseGmailConnectionLoaderDecodesSourceConnectionStatus() async throws {
         let client = CapturingSupabaseAuthHTTPClient(
             responseData: """

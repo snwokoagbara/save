@@ -108,6 +108,17 @@ create table if not exists private.gmail_oauth_tokens (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists private.gmail_imported_messages (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  gmail_message_id text not null,
+  receipt_id uuid references public.receipts(id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, gmail_message_id)
+);
+
+create index if not exists idx_gmail_imported_messages_receipt_id
+on private.gmail_imported_messages(receipt_id);
+
 revoke all on schema private from anon, authenticated;
 revoke all on all tables in schema private from anon, authenticated;
 

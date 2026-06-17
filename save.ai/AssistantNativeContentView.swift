@@ -8,6 +8,7 @@ struct AssistantNativeContentView: View {
     private let remoteProgressLoaderFactory: (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading?
     private let administratorTemplateLoaderFactory: (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading?
     private let gmailConnectionControllerFactory: (SupabaseAuthSession) -> GmailConnectionStarting?
+    private let gmailReceiptImporterFactory: (SupabaseAuthSession) -> GmailReceiptImporting?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
@@ -15,6 +16,7 @@ struct AssistantNativeContentView: View {
     @State private var pendingGmailAuthorizationStart: GmailAuthorizationStart?
     @State private var gmailConnectionError: String?
     @State private var isConnectingGmail = false
+    @State private var isImportingGmail = false
     @State private var authSession: SupabaseAuthSession?
     @State private var remoteSyncStatus: SaveMVPRemoteSyncStatus?
     @State private var hasAttemptedRemoteProgressLoad = false
@@ -31,6 +33,7 @@ struct AssistantNativeContentView: View {
         remoteProgressLoaderFactory: @escaping (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading? = { _ in nil },
         administratorTemplateLoaderFactory: @escaping (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading? = { _ in nil },
         gmailConnectionControllerFactory: @escaping (SupabaseAuthSession) -> GmailConnectionStarting? = { _ in nil },
+        gmailReceiptImporterFactory: @escaping (SupabaseAuthSession) -> GmailReceiptImporting? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
@@ -38,6 +41,7 @@ struct AssistantNativeContentView: View {
         self.remoteProgressLoaderFactory = remoteProgressLoaderFactory
         self.administratorTemplateLoaderFactory = administratorTemplateLoaderFactory
         self.gmailConnectionControllerFactory = gmailConnectionControllerFactory
+        self.gmailReceiptImporterFactory = gmailReceiptImporterFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
@@ -77,6 +81,12 @@ struct AssistantNativeContentView: View {
             },
             gmailConnectionControllerFactory: { session in
                 GmailConnectionControllerFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
+            gmailReceiptImporterFactory: { session in
+                GmailReceiptImporterFactory.make(
                     environment: environment,
                     session: session
                 )
@@ -197,7 +207,11 @@ struct AssistantNativeContentView: View {
             VStack(alignment: .leading, spacing: 18) {
                 AssistantHero(state: state) { source in
                     if source == .gmail {
-                        startGmailConnection()
+                        if state.connectedSources.contains(.gmail) {
+                            importGmailReceipts()
+                        } else {
+                            startGmailConnection()
+                        }
                     } else {
                         updateState {
                             $0.connect(source)
@@ -424,6 +438,36 @@ struct AssistantNativeContentView: View {
                     self.pendingGmailAuthorizationStart = nil
                     isConnectingGmail = false
                     gmailConnectionError = "Gmail connection could not finish. Check OAuth secrets and try again."
+                }
+            }
+        }
+    }
+
+    private func importGmailReceipts() {
+        gmailConnectionError = nil
+
+        guard let authSession,
+              let importer = gmailReceiptImporterFactory(authSession) else {
+            gmailConnectionError = "Sign in and connect Gmail before scanning email receipts."
+            return
+        }
+
+        isImportingGmail = true
+        Task {
+            do {
+                let result = try await importer.importReceipts()
+                await MainActor.run {
+                    isImportingGmail = false
+                    gmailConnectionError = result.importedReceiptCount == 0
+                        ? "Gmail scan finished. No new likely medical receipts found."
+                        : "Gmail scan imported \(result.importedReceiptCount) likely medical receipt(s)."
+                    hasAttemptedRemoteProgressLoad = false
+                }
+                await restoreRemoteProgressIfAvailable()
+            } catch {
+                await MainActor.run {
+                    isImportingGmail = false
+                    gmailConnectionError = "Gmail scan could not run. Check Gmail OAuth secrets and connection status."
                 }
             }
         }

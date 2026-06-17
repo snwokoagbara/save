@@ -204,6 +204,15 @@ protocol GmailConnectionLoading {
     func load() async throws -> GmailConnection?
 }
 
+struct GmailReceiptImportResult: Equatable {
+    let importedReceiptCount: Int
+    let importedLineItemCount: Int
+}
+
+protocol GmailReceiptImporting {
+    func importReceipts() async throws -> GmailReceiptImportResult
+}
+
 struct SupabaseSaveMVPConfiguration: Equatable {
     let projectURL: URL
     let publishableKey: String
@@ -965,6 +974,56 @@ struct SupabaseRESTGmailConnectionLoader: GmailConnectionLoading {
                 accountLabel: providerAccountLabel,
                 lastSyncedAt: lastSyncedAt,
                 errorCode: errorCode
+            )
+        }
+    }
+}
+
+struct SupabaseRESTGmailReceiptImporter: GmailReceiptImporting {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let httpClient: SupabaseAuthHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.httpClient = httpClient
+    }
+
+    func importReceipts() async throws -> GmailReceiptImportResult {
+        let url = configuration.projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("gmail-receipt-import")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = "{}".data(using: .utf8)
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let data = try await httpClient.data(for: request)
+        return try JSONDecoder.saveMVP.decode(ImportResponse.self, from: data).result
+    }
+
+    private struct ImportResponse: Decodable {
+        let importedReceiptCount: Int
+        let importedLineItemCount: Int
+
+        enum CodingKeys: String, CodingKey {
+            case importedReceiptCount = "imported_receipt_count"
+            case importedLineItemCount = "imported_line_item_count"
+        }
+
+        var result: GmailReceiptImportResult {
+            GmailReceiptImportResult(
+                importedReceiptCount: importedReceiptCount,
+                importedLineItemCount: importedLineItemCount
             )
         }
     }
@@ -2042,6 +2101,23 @@ enum GmailConnectionControllerFactory {
             configuration: configuration,
             session: session,
             redirectURI: redirectURI
+        )
+    }
+}
+
+enum GmailReceiptImporterFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: SupabaseAuthSession
+    ) -> GmailReceiptImporting? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
+              session.isUsable() else {
+            return nil
+        }
+
+        return SupabaseRESTGmailReceiptImporter(
+            configuration: configuration,
+            session: session
         )
     }
 }
