@@ -161,6 +161,8 @@ create table if not exists public.administrator_templates (
   supported_submission_mode public.submission_mode not null default 'guided_packet',
   required_fields jsonb not null default '[]'::jsonb,
   evidence_requirements jsonb not null default '[]'::jsonb,
+  submission_checklist jsonb not null default '[]'::jsonb,
+  instructions jsonb not null default '[]'::jsonb,
   field_mapping jsonb not null default '{}'::jsonb,
   user_instructions text not null default '',
   last_reviewed_at timestamptz,
@@ -169,6 +171,12 @@ create table if not exists public.administrator_templates (
   updated_at timestamptz not null default now(),
   unique (administrator_name, template_version)
 );
+
+alter table public.administrator_templates
+add column if not exists submission_checklist jsonb not null default '[]'::jsonb;
+
+alter table public.administrator_templates
+add column if not exists instructions jsonb not null default '[]'::jsonb;
 
 create table if not exists public.claim_packets (
   id uuid primary key default gen_random_uuid(),
@@ -349,6 +357,86 @@ create trigger classification_runs_set_updated_at before update on public.classi
 
 drop trigger if exists administrator_templates_set_updated_at on public.administrator_templates;
 create trigger administrator_templates_set_updated_at before update on public.administrator_templates for each row execute function public.set_updated_at();
+
+insert into public.administrator_templates (
+  administrator_name,
+  template_version,
+  supported_submission_mode,
+  required_fields,
+  evidence_requirements,
+  submission_checklist,
+  instructions,
+  user_instructions,
+  last_reviewed_at,
+  is_active
+)
+values
+  (
+    'HealthEquity',
+    '2026.1',
+    'guided_packet',
+    jsonb_build_array('Account holder name', 'Date of service', 'Provider or merchant', 'Claim amount'),
+    jsonb_build_array(
+      'Itemized receipt showing merchant, purchase date, eligible item, and amount',
+      'Proof of payment when the receipt does not show a paid card transaction'
+    ),
+    jsonb_build_array(
+      'Review the required claim fields before opening the administrator portal.',
+      'Attach the generated SAVE claim packet PDF in HealthEquity.',
+      'Return to SAVE and mark the packet submitted after upload.'
+    ),
+    jsonb_build_array('Submit through the HealthEquity member portal after reviewing the attached itemized evidence.'),
+    'Submit through the HealthEquity member portal after reviewing the attached itemized evidence.',
+    now(),
+    true
+  ),
+  (
+    'Inspira',
+    '2026.1',
+    'in_app_submission',
+    jsonb_build_array('Participant name', 'Service date', 'Expense type', 'Claim amount'),
+    jsonb_build_array(
+      'Itemized receipt with merchant, date, item description, and amount',
+      'Card transaction match or paid invoice'
+    ),
+    jsonb_build_array(
+      'Review the required claim fields before starting the Inspira claim flow.',
+      'Submit directly through Inspira when in-app submission is available.',
+      'Return to SAVE and mark the packet submitted after confirmation.'
+    ),
+    jsonb_build_array('Use the Inspira claim flow when available; keep the guided packet as the fallback attachment.'),
+    'Use the Inspira claim flow when available; keep the guided packet as the fallback attachment.',
+    now(),
+    true
+  ),
+  (
+    'WEX',
+    '2026.1',
+    'guided_packet',
+    jsonb_build_array('Employee name', 'Service date', 'Provider or store', 'Claim amount'),
+    jsonb_build_array(
+      'Itemized receipt or explanation of benefits',
+      'Proof the user paid the expense'
+    ),
+    jsonb_build_array(
+      'Review the required claim fields before opening WEX.',
+      'Attach the generated SAVE claim packet PDF in the WEX benefits portal.',
+      'Return to SAVE and mark the packet submitted after upload.'
+    ),
+    jsonb_build_array('Attach this packet in the WEX benefits portal and mark the claim submitted once uploaded.'),
+    'Attach this packet in the WEX benefits portal and mark the claim submitted once uploaded.',
+    now(),
+    true
+  )
+on conflict (administrator_name, template_version) do update set
+  supported_submission_mode = excluded.supported_submission_mode,
+  required_fields = excluded.required_fields,
+  evidence_requirements = excluded.evidence_requirements,
+  submission_checklist = excluded.submission_checklist,
+  instructions = excluded.instructions,
+  user_instructions = excluded.user_instructions,
+  last_reviewed_at = excluded.last_reviewed_at,
+  is_active = excluded.is_active;
 
 drop trigger if exists claim_packets_set_updated_at on public.claim_packets;
 create trigger claim_packets_set_updated_at before update on public.claim_packets for each row execute function public.set_updated_at();

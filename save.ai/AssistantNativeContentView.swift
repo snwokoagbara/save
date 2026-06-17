@@ -5,9 +5,11 @@ import UIKit
 struct AssistantNativeContentView: View {
     private let progressStoreFactory: (@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring
     private let remoteProgressLoaderFactory: (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading?
+    private let administratorTemplateLoaderFactory: (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
+    @State private var administratorTemplates: [ClaimAdministratorTemplate]
     @State private var authSession: SupabaseAuthSession?
     @State private var remoteSyncStatus: SaveMVPRemoteSyncStatus?
     @State private var hasAttemptedRemoteProgressLoad = false
@@ -22,17 +24,20 @@ struct AssistantNativeContentView: View {
         progressStore: SaveMVPProgressStoring = UserDefaultsSaveMVPProgressStore(),
         progressStoreFactory: (((@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring))? = nil,
         remoteProgressLoaderFactory: @escaping (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading? = { _ in nil },
+        administratorTemplateLoaderFactory: @escaping (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
         self.progressStoreFactory = progressStoreFactory ?? { _ in progressStore }
         self.remoteProgressLoaderFactory = remoteProgressLoaderFactory
+        self.administratorTemplateLoaderFactory = administratorTemplateLoaderFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
         }
         _progressStore = State(initialValue: progressStore)
         _state = State(initialValue: SaveMVPState(persisted: progressStore.load()))
+        _administratorTemplates = State(initialValue: ClaimAdministratorTemplateLibrary.defaultTemplates)
         _authSession = State(initialValue: authSession)
     }
 
@@ -53,6 +58,12 @@ struct AssistantNativeContentView: View {
             progressStoreFactory: makeProgressStore,
             remoteProgressLoaderFactory: { session in
                 SaveMVPRemoteProgressLoaderFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
+            administratorTemplateLoaderFactory: { session in
+                ClaimAdministratorTemplateLoaderFactory.make(
                     environment: environment,
                     session: session
                 )
@@ -150,6 +161,7 @@ struct AssistantNativeContentView: View {
         }
         .task(id: authSession?.userID) {
             await restoreRemoteProgressIfAvailable()
+            await loadAdministratorTemplatesIfAvailable()
         }
         .onAppear {
             configureProgressStore()
@@ -266,7 +278,7 @@ struct AssistantNativeContentView: View {
         }
         .sheet(item: $claimPacketRoute) { route in
             if let packet = state.claimPackets.first(where: { $0.id == route.packetID }) {
-                ClaimPacketDetailSheet(packet: packet) { packet, submission in
+                ClaimPacketDetailSheet(packet: packet, templates: administratorTemplates) { packet, submission in
                     updateState {
                         $0.submitClaimPacket(packet.id, submission: submission)
                     }
@@ -299,6 +311,7 @@ struct AssistantNativeContentView: View {
     private func signOut() {
         signInController?.signOut()
         authSession = nil
+        administratorTemplates = ClaimAdministratorTemplateLibrary.defaultTemplates
         remoteSyncStatus = nil
         hasAttemptedRemoteProgressLoad = false
         progressStore = UserDefaultsSaveMVPProgressStore()
@@ -349,6 +362,23 @@ struct AssistantNativeContentView: View {
             }
         } catch {
             return
+        }
+    }
+
+    private func loadAdministratorTemplatesIfAvailable() async {
+        guard let authSession,
+              let loader = administratorTemplateLoaderFactory(authSession) else {
+            administratorTemplates = ClaimAdministratorTemplateLibrary.defaultTemplates
+            return
+        }
+
+        do {
+            let templates = try await loader.load()
+            if !templates.isEmpty {
+                administratorTemplates = ClaimAdministratorTemplateLibrary.mergedWithDefaults(templates)
+            }
+        } catch {
+            administratorTemplates = ClaimAdministratorTemplateLibrary.defaultTemplates
         }
     }
 
@@ -1464,6 +1494,7 @@ private struct AssistantCaseRail: View {
 
 private struct ClaimPacketDetailSheet: View {
     let packet: ClaimPacket
+    let templates: [ClaimAdministratorTemplate]
     let submit: (ClaimPacket, ClaimSubmission) -> Void
     let markReimbursed: (ClaimPacket) -> Void
     @State private var pdfURL: URL?
@@ -1473,7 +1504,7 @@ private struct ClaimPacketDetailSheet: View {
     @State private var submissionNotes = ""
 
     private var document: ClaimPacketDocument {
-        ClaimPacketDocumentBuilder().build(from: packet)
+        ClaimPacketDocumentBuilder(templates: templates).build(from: packet)
     }
 
     var body: some View {

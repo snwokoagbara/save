@@ -10,7 +10,7 @@ SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA
 - Receipt review and line-item eligibility classification.
 - Receipt metadata and line-item editing during review.
 - HSA/FSA claim packet preparation, submission tracking, and reimbursement status tracking.
-- Local administrator templates for HealthEquity, Inspira, WEX, and a generic guided-packet fallback.
+- Supabase-managed administrator templates for HealthEquity, Inspira, and WEX, with local defaults and a generic guided-packet fallback.
 - Claim packet PDF export through the iOS share sheet.
 - Schedule A medical-expense CSV/PDF export through the iOS share sheet.
 - Local progress persistence with optional Supabase snapshot sync and restore.
@@ -59,10 +59,10 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 - June 14, 2026: Signed-in simulator QA against the live Supabase project synced 1 progress snapshot, 4 receipts, 7 receipt line items, 2 claim packets, and 1 tax export for the QA account.
 - June 15, 2026: Signed-in simulator QA restored first-class Supabase rows, ignored stale claim packets with no joined items, and showed 3 claim packets in the app while the QA database still retained 4 historical claim packet rows and 3 claim packet item rows.
 - June 16, 2026: Simulator QA verified HealthEquity claim submission tracking from a ready packet through submitted state, including method, confirmation number, notes, and PDF submission-detail text.
+- June 17, 2026: Build-for-testing verified Supabase-managed administrator template loading, local fallback merging, and managed claim packet document generation.
 
 ## V1 Next Steps
 
 1. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-2. Move administrator templates from the local library into Supabase-managed rows when template editing/review workflow is needed.
-3. Defer Gmail OAuth and Plaid until after the reviewed V1 prototype is accepted.
-4. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.
+2. Defer Gmail OAuth and Plaid until after the reviewed V1 prototype is accepted.
+3. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.

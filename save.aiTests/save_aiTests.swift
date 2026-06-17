@@ -222,6 +222,34 @@ struct save_aiTests {
         #expect(document.text.contains("- Return to SAVE and mark the packet submitted after upload."))
     }
 
+    @Test func claimPacketDocumentUsesManagedAdministratorTemplate() async throws {
+        let packet = ClaimPacket(
+            administratorName: "HealthEquity",
+            lineItems: [
+                ReceiptLineItem(name: "FSA Sunscreen SPF 50", amount: 18.77, eligibility: .fsaEligible, confidence: 0.96)
+            ],
+            submissionMode: .guidedPacket,
+            status: .ready
+        )
+        let managedTemplate = ClaimAdministratorTemplate(
+            administratorName: "HealthEquity",
+            version: "managed-2026.2",
+            supportedSubmissionMode: .guidedPacket,
+            requiredFields: ["Member ID", "Service date", "Claim amount"],
+            evidenceRequirements: ["Managed receipt rule"],
+            submissionChecklist: ["Managed portal step"],
+            instructions: ["Managed HealthEquity instruction."]
+        )
+
+        let document = ClaimPacketDocumentBuilder(templates: [managedTemplate]).build(from: packet)
+
+        #expect(document.template.version == "managed-2026.2")
+        #expect(document.text.contains("Template: HealthEquity managed-2026.2"))
+        #expect(document.text.contains("- Member ID"))
+        #expect(document.text.contains("- Managed portal step"))
+        #expect(document.text.contains("Managed HealthEquity instruction."))
+    }
+
     @Test func claimPacketDocumentIncludesSubmissionDetailsWhenSubmitted() async throws {
         let packet = ClaimPacket(
             administratorName: "HealthEquity",
@@ -253,6 +281,55 @@ struct save_aiTests {
         #expect(template.version == "generic-2026.1")
         #expect(template.supportedSubmissionMode == .guidedPacket)
         #expect(template.requiredFields.contains("Claim amount"))
+    }
+
+    @Test func supabaseAdministratorTemplateLoaderBuildsManagedTemplates() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            [
+              {
+                "administrator_name": "HealthEquity",
+                "template_version": "2026.2",
+                "supported_submission_mode": "guided_packet",
+                "required_fields": ["Member ID", "Service date", "Claim amount"],
+                "evidence_requirements": ["Managed receipt rule"],
+                "submission_checklist": ["Managed portal step"],
+                "instructions": ["Managed HealthEquity instruction."]
+              }
+            ]
+            """.data(using: .utf8)!
+        )
+        let loader = SupabaseRESTClaimAdministratorTemplateLoader(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let templates = try await loader.load()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString.contains("/rest/v1/administrator_templates?") == true)
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(templates == [
+            ClaimAdministratorTemplate(
+                administratorName: "HealthEquity",
+                version: "2026.2",
+                supportedSubmissionMode: .guidedPacket,
+                requiredFields: ["Member ID", "Service date", "Claim amount"],
+                evidenceRequirements: ["Managed receipt rule"],
+                submissionChecklist: ["Managed portal step"],
+                instructions: ["Managed HealthEquity instruction."]
+            )
+        ])
     }
 
     @Test func mvpTaxExportCreatesArtifact() async throws {

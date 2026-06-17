@@ -151,6 +151,10 @@ protocol SaveMVPRemoteProgressLoading {
     func load() async throws -> SaveMVPPersistedState?
 }
 
+protocol ClaimAdministratorTemplateLoading {
+    func load() async throws -> [ClaimAdministratorTemplate]
+}
+
 struct SupabaseSaveMVPConfiguration: Equatable {
     let projectURL: URL
     let publishableKey: String
@@ -610,6 +614,92 @@ struct SupabaseRESTSaveMVPProgressLoader: SaveMVPRemoteProgressLoading {
 
     private struct SnapshotResponse: Decodable {
         let state: SaveMVPPersistedState
+    }
+}
+
+struct SupabaseRESTClaimAdministratorTemplateLoader: ClaimAdministratorTemplateLoading {
+    private let configuration: SupabaseSaveMVPConfiguration
+    private let session: SupabaseAuthSession
+    private let httpClient: SupabaseAuthHTTPClient
+
+    init(
+        configuration: SupabaseSaveMVPConfiguration,
+        session: SupabaseAuthSession,
+        httpClient: SupabaseAuthHTTPClient = URLSessionSupabaseAuthHTTPClient()
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.httpClient = httpClient
+    }
+
+    func load() async throws -> [ClaimAdministratorTemplate] {
+        guard let request = makeRequest() else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        let data = try await httpClient.data(for: request)
+        return try JSONDecoder.saveMVP.decode([TemplateResponse].self, from: data).map(\.template)
+    }
+
+    private func makeRequest() -> URLRequest? {
+        var components = URLComponents(
+            url: configuration.projectURL
+                .appendingPathComponent("rest")
+                .appendingPathComponent("v1")
+                .appendingPathComponent("administrator_templates"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "select", value: "administrator_name,template_version,supported_submission_mode,required_fields,evidence_requirements,submission_checklist,instructions,user_instructions"),
+            URLQueryItem(name: "is_active", value: "eq.true"),
+            URLQueryItem(name: "order", value: "administrator_name.asc")
+        ]
+
+        guard let url = components?.url else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private struct TemplateResponse: Decodable {
+        let administratorName: String
+        let templateVersion: String
+        let supportedSubmissionMode: String
+        let requiredFields: [String]
+        let evidenceRequirements: [String]
+        let submissionChecklist: [String]?
+        let instructions: [String]?
+        let userInstructions: String?
+
+        enum CodingKeys: String, CodingKey {
+            case administratorName = "administrator_name"
+            case templateVersion = "template_version"
+            case supportedSubmissionMode = "supported_submission_mode"
+            case requiredFields = "required_fields"
+            case evidenceRequirements = "evidence_requirements"
+            case submissionChecklist = "submission_checklist"
+            case instructions
+            case userInstructions = "user_instructions"
+        }
+
+        var template: ClaimAdministratorTemplate {
+            let rowInstructions = instructions ?? userInstructions.map { [$0] } ?? []
+            return ClaimAdministratorTemplate(
+                administratorName: administratorName,
+                version: templateVersion,
+                supportedSubmissionMode: SubmissionMode(supabaseValue: supportedSubmissionMode) ?? .guidedPacket,
+                requiredFields: requiredFields,
+                evidenceRequirements: evidenceRequirements,
+                submissionChecklist: submissionChecklist ?? [],
+                instructions: rowInstructions
+            )
+        }
     }
 }
 
@@ -1649,6 +1739,23 @@ enum SaveMVPRemoteProgressLoaderFactory {
                 configuration: configuration,
                 session: session
             )
+        )
+    }
+}
+
+enum ClaimAdministratorTemplateLoaderFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: SupabaseAuthSession
+    ) -> ClaimAdministratorTemplateLoading? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
+              session.isUsable() else {
+            return nil
+        }
+
+        return SupabaseRESTClaimAdministratorTemplateLoader(
+            configuration: configuration,
+            session: session
         )
     }
 }

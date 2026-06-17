@@ -12,66 +12,77 @@ struct ClaimAdministratorTemplate: Hashable {
 }
 
 enum ClaimAdministratorTemplateLibrary {
+    static let defaultTemplates: [ClaimAdministratorTemplate] = [
+        ClaimAdministratorTemplate(
+            administratorName: "HealthEquity",
+            version: "2026.1",
+            supportedSubmissionMode: .guidedPacket,
+            requiredFields: ["Account holder name", "Date of service", "Provider or merchant", "Claim amount"],
+            evidenceRequirements: [
+                "Itemized receipt showing merchant, purchase date, eligible item, and amount",
+                "Proof of payment when the receipt does not show a paid card transaction"
+            ],
+            submissionChecklist: [
+                "Review the required claim fields before opening the administrator portal.",
+                "Attach the generated SAVE claim packet PDF in HealthEquity.",
+                "Return to SAVE and mark the packet submitted after upload."
+            ],
+            instructions: ["Submit through the HealthEquity member portal after reviewing the attached itemized evidence."]
+        ),
+        ClaimAdministratorTemplate(
+            administratorName: "Inspira",
+            version: "2026.1",
+            supportedSubmissionMode: .inAppSubmission,
+            requiredFields: ["Participant name", "Service date", "Expense type", "Claim amount"],
+            evidenceRequirements: [
+                "Itemized receipt with merchant, date, item description, and amount",
+                "Card transaction match or paid invoice"
+            ],
+            submissionChecklist: [
+                "Review the required claim fields before starting the Inspira claim flow.",
+                "Submit directly through Inspira when in-app submission is available.",
+                "Return to SAVE and mark the packet submitted after confirmation."
+            ],
+            instructions: ["Use the Inspira claim flow when available; keep the guided packet as the fallback attachment."]
+        ),
+        ClaimAdministratorTemplate(
+            administratorName: "WEX",
+            version: "2026.1",
+            supportedSubmissionMode: .guidedPacket,
+            requiredFields: ["Employee name", "Service date", "Provider or store", "Claim amount"],
+            evidenceRequirements: [
+                "Itemized receipt or explanation of benefits",
+                "Proof the user paid the expense"
+            ],
+            submissionChecklist: [
+                "Review the required claim fields before opening WEX.",
+                "Attach the generated SAVE claim packet PDF in the WEX benefits portal.",
+                "Return to SAVE and mark the packet submitted after upload."
+            ],
+            instructions: ["Attach this packet in the WEX benefits portal and mark the claim submitted once uploaded."]
+        )
+    ]
+
     static func template(for administratorName: String) -> ClaimAdministratorTemplate {
+        template(for: administratorName, templates: defaultTemplates)
+    }
+
+    static func mergedWithDefaults(_ templates: [ClaimAdministratorTemplate]) -> [ClaimAdministratorTemplate] {
+        templates + defaultTemplates.filter { localTemplate in
+            !templates.contains { $0.administratorName.caseInsensitiveCompare(localTemplate.administratorName) == .orderedSame }
+        }
+    }
+
+    static func template(
+        for administratorName: String,
+        templates: [ClaimAdministratorTemplate]
+    ) -> ClaimAdministratorTemplate {
         let trimmedName = administratorName.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = trimmedName.isEmpty ? "Administrator" : trimmedName
         let normalizedName = displayName.lowercased()
 
-        if normalizedName.contains("healthequity") {
-            return ClaimAdministratorTemplate(
-                administratorName: "HealthEquity",
-                version: "2026.1",
-                supportedSubmissionMode: .guidedPacket,
-                requiredFields: ["Account holder name", "Date of service", "Provider or merchant", "Claim amount"],
-                evidenceRequirements: [
-                    "Itemized receipt showing merchant, purchase date, eligible item, and amount",
-                    "Proof of payment when the receipt does not show a paid card transaction"
-                ],
-                submissionChecklist: [
-                    "Review the required claim fields before opening the administrator portal.",
-                    "Attach the generated SAVE claim packet PDF in HealthEquity.",
-                    "Return to SAVE and mark the packet submitted after upload."
-                ],
-                instructions: ["Submit through the HealthEquity member portal after reviewing the attached itemized evidence."]
-            )
-        }
-
-        if normalizedName.contains("inspira") {
-            return ClaimAdministratorTemplate(
-                administratorName: "Inspira",
-                version: "2026.1",
-                supportedSubmissionMode: .inAppSubmission,
-                requiredFields: ["Participant name", "Service date", "Expense type", "Claim amount"],
-                evidenceRequirements: [
-                    "Itemized receipt with merchant, date, item description, and amount",
-                    "Card transaction match or paid invoice"
-                ],
-                submissionChecklist: [
-                    "Review the required claim fields before starting the Inspira claim flow.",
-                    "Submit directly through Inspira when in-app submission is available.",
-                    "Return to SAVE and mark the packet submitted after confirmation."
-                ],
-                instructions: ["Use the Inspira claim flow when available; keep the guided packet as the fallback attachment."]
-            )
-        }
-
-        if normalizedName.contains("wex") {
-            return ClaimAdministratorTemplate(
-                administratorName: "WEX",
-                version: "2026.1",
-                supportedSubmissionMode: .guidedPacket,
-                requiredFields: ["Employee name", "Service date", "Provider or store", "Claim amount"],
-                evidenceRequirements: [
-                    "Itemized receipt or explanation of benefits",
-                    "Proof the user paid the expense"
-                ],
-                submissionChecklist: [
-                    "Review the required claim fields before opening WEX.",
-                    "Attach the generated SAVE claim packet PDF in the WEX benefits portal.",
-                    "Return to SAVE and mark the packet submitted after upload."
-                ],
-                instructions: ["Attach this packet in the WEX benefits portal and mark the claim submitted once uploaded."]
-            )
+        if let template = templates.first(where: { normalizedName.contains($0.administratorName.lowercased()) }) {
+            return template
         }
 
         return ClaimAdministratorTemplate(
@@ -100,8 +111,14 @@ struct ClaimPacketDocument: Hashable {
 }
 
 struct ClaimPacketDocumentBuilder {
+    private let templates: [ClaimAdministratorTemplate]
+
+    init(templates: [ClaimAdministratorTemplate] = ClaimAdministratorTemplateLibrary.defaultTemplates) {
+        self.templates = templates
+    }
+
     func build(from packet: ClaimPacket) -> ClaimPacketDocument {
-        let template = ClaimAdministratorTemplateLibrary.template(for: packet.administratorName)
+        let template = ClaimAdministratorTemplateLibrary.template(for: packet.administratorName, templates: templates)
         let title = "\(packet.administratorName) claim packet"
         let itemLines = packet.lineItems.map { item in
             "\(item.name) - \(item.amount.currency) - \(item.eligibility.rawValue)"
