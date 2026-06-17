@@ -104,6 +104,16 @@ struct save_aiTests {
         #expect(!state.activeTasks.map(\.title).contains("Link bank"))
     }
 
+    @Test func mvpDisconnectsGmailAndRestoresConnectionTask() async throws {
+        var state = SaveMVPState()
+
+        state.connect(.gmail)
+        state.disconnect(.gmail)
+
+        #expect(!state.isReadyForEstimate)
+        #expect(state.activeTasks.map(\.title).contains("Connect Gmail"))
+    }
+
     @Test func mvpReviewActionExcludesUncertainLineItem() async throws {
         var state = SaveMVPState()
 
@@ -422,6 +432,48 @@ struct save_aiTests {
             status: .connected,
             accountLabel: "kai@example.com",
             lastSyncedAt: Date(timeIntervalSince1970: 1_781_676_000),
+            errorCode: nil
+        ))
+    }
+
+    @Test func supabaseGmailConnectionControllerBuildsAuthenticatedDisconnectRequest() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "status": "revoked",
+              "provider_account_label": null,
+              "last_synced_at": null,
+              "error_code": null
+            }
+            """.data(using: .utf8)!
+        )
+        let controller = SupabaseRESTGmailConnectionController(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            redirectURI: URL(string: "saveai://gmail-oauth-callback")!,
+            httpClient: client
+        )
+
+        let connection = try await controller.disconnect()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/functions/v1/gmail-disconnect")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(connection == GmailConnection(
+            status: .revoked,
+            accountLabel: nil,
+            lastSyncedAt: nil,
             errorCode: nil
         ))
     }

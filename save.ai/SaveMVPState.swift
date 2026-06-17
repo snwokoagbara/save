@@ -257,6 +257,10 @@ struct SaveMVPState {
         connectedSources.insert(source)
     }
 
+    mutating func disconnect(_ source: ConnectedSource) {
+        connectedSources.remove(source)
+    }
+
     mutating func completeOnboarding() {
         hasCompletedOnboarding = true
     }

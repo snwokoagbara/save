@@ -200,6 +200,10 @@ protocol GmailConnectionStarting {
     func completeAuthorization(code: String, state: String, codeVerifier: String) async throws -> GmailConnection
 }
 
+protocol GmailDisconnecting {
+    func disconnect() async throws -> GmailConnection
+}
+
 protocol GmailConnectionLoading {
     func load() async throws -> GmailConnection?
 }
@@ -770,7 +774,7 @@ struct SupabaseRESTClaimAdministratorTemplateLoader: ClaimAdministratorTemplateL
     }
 }
 
-struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
+struct SupabaseRESTGmailConnectionController: GmailConnectionStarting, GmailDisconnecting {
     private let configuration: SupabaseSaveMVPConfiguration
     private let session: SupabaseAuthSession
     private let redirectURI: URL
@@ -802,6 +806,24 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
         guard let request = makeCallbackRequest(code: code, state: state, codeVerifier: codeVerifier) else {
             throw SupabaseAuthError.invalidURL
         }
+
+        let data = try await httpClient.data(for: request)
+        let response = try JSONDecoder.saveMVP.decode(ConnectionResponse.self, from: data)
+        return response.connection
+    }
+
+    func disconnect() async throws -> GmailConnection {
+        let url = configuration.projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("gmail-disconnect")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = "{}".data(using: .utf8)
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let data = try await httpClient.data(for: request)
         let response = try JSONDecoder.saveMVP.decode(ConnectionResponse.self, from: data)
@@ -2174,6 +2196,25 @@ enum GmailReceiptImporterFactory {
         return SupabaseRESTGmailReceiptImporter(
             configuration: configuration,
             session: session
+        )
+    }
+}
+
+enum GmailDisconnectControllerFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: SupabaseAuthSession
+    ) -> GmailDisconnecting? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
+              session.isUsable(),
+              let redirectURI = URL(string: "saveai://gmail-oauth-callback") else {
+            return nil
+        }
+
+        return SupabaseRESTGmailConnectionController(
+            configuration: configuration,
+            session: session,
+            redirectURI: redirectURI
         )
     }
 }

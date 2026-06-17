@@ -9,6 +9,7 @@ struct AssistantNativeContentView: View {
     private let administratorTemplateLoaderFactory: (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading?
     private let gmailConnectionControllerFactory: (SupabaseAuthSession) -> GmailConnectionStarting?
     private let gmailReceiptImporterFactory: (SupabaseAuthSession) -> GmailReceiptImporting?
+    private let gmailDisconnectControllerFactory: (SupabaseAuthSession) -> GmailDisconnecting?
     private let gmailConfigurationCheckerFactory: (SupabaseAuthSession) -> GmailConfigurationChecking?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
@@ -18,6 +19,8 @@ struct AssistantNativeContentView: View {
     @State private var gmailConnectionError: String?
     @State private var isConnectingGmail = false
     @State private var isImportingGmail = false
+    @State private var isDisconnectingGmail = false
+    @State private var gmailLastScannedAt: Date?
     @State private var authSession: SupabaseAuthSession?
     @State private var remoteSyncStatus: SaveMVPRemoteSyncStatus?
     @State private var hasAttemptedRemoteProgressLoad = false
@@ -35,6 +38,7 @@ struct AssistantNativeContentView: View {
         administratorTemplateLoaderFactory: @escaping (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading? = { _ in nil },
         gmailConnectionControllerFactory: @escaping (SupabaseAuthSession) -> GmailConnectionStarting? = { _ in nil },
         gmailReceiptImporterFactory: @escaping (SupabaseAuthSession) -> GmailReceiptImporting? = { _ in nil },
+        gmailDisconnectControllerFactory: @escaping (SupabaseAuthSession) -> GmailDisconnecting? = { _ in nil },
         gmailConfigurationCheckerFactory: @escaping (SupabaseAuthSession) -> GmailConfigurationChecking? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
@@ -44,6 +48,7 @@ struct AssistantNativeContentView: View {
         self.administratorTemplateLoaderFactory = administratorTemplateLoaderFactory
         self.gmailConnectionControllerFactory = gmailConnectionControllerFactory
         self.gmailReceiptImporterFactory = gmailReceiptImporterFactory
+        self.gmailDisconnectControllerFactory = gmailDisconnectControllerFactory
         self.gmailConfigurationCheckerFactory = gmailConfigurationCheckerFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
@@ -90,6 +95,12 @@ struct AssistantNativeContentView: View {
             },
             gmailReceiptImporterFactory: { session in
                 GmailReceiptImporterFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
+            gmailDisconnectControllerFactory: { session in
+                GmailDisconnectControllerFactory.make(
                     environment: environment,
                     session: session
                 )
@@ -233,6 +244,14 @@ struct AssistantNativeContentView: View {
                         .foregroundStyle(.red)
                         .padding(.horizontal, 4)
                 }
+                GmailPrivacyView(
+                    isConnected: state.connectedSources.contains(.gmail),
+                    lastScannedAt: gmailLastScannedAt,
+                    isDisconnecting: isDisconnectingGmail,
+                    disconnect: {
+                        disconnectGmail()
+                    }
+                )
                 AccountStatusView(
                     authSession: authSession,
                     isSupabaseConfigured: signInController != nil,
@@ -489,6 +508,7 @@ struct AssistantNativeContentView: View {
                 let result = try await importer.importReceipts()
                 await MainActor.run {
                     isImportingGmail = false
+                    gmailLastScannedAt = Date()
                     gmailConnectionError = result.importedReceiptCount == 0
                         ? "Gmail scan finished. No new likely medical receipts found."
                         : "Gmail scan imported \(result.importedReceiptCount) likely medical receipt(s)."
@@ -499,6 +519,44 @@ struct AssistantNativeContentView: View {
                 await MainActor.run {
                     isImportingGmail = false
                     gmailConnectionError = "Gmail scan could not run. Check Gmail OAuth secrets and connection status."
+                }
+            }
+        }
+    }
+
+    private func disconnectGmail() {
+        gmailConnectionError = nil
+
+        guard state.connectedSources.contains(.gmail) else {
+            return
+        }
+
+        guard let authSession,
+              let disconnector = gmailDisconnectControllerFactory(authSession) else {
+            updateState {
+                $0.disconnect(.gmail)
+            }
+            gmailLastScannedAt = nil
+            gmailConnectionError = "Gmail disconnected on this device."
+            return
+        }
+
+        isDisconnectingGmail = true
+        Task {
+            do {
+                _ = try await disconnector.disconnect()
+                await MainActor.run {
+                    isDisconnectingGmail = false
+                    gmailLastScannedAt = nil
+                    updateState {
+                        $0.disconnect(.gmail)
+                    }
+                    gmailConnectionError = "Gmail disconnected. Kai will stop scanning email receipts."
+                }
+            } catch {
+                await MainActor.run {
+                    isDisconnectingGmail = false
+                    gmailConnectionError = "Gmail could not be disconnected. Check connection and try again."
                 }
             }
         }
@@ -864,6 +922,54 @@ private struct AssistantHero: View {
         }
 
         return state.summary.assistantStatusLine
+    }
+}
+
+private struct GmailPrivacyView: View {
+    let isConnected: Bool
+    let lastScannedAt: Date?
+    let isDisconnecting: Bool
+    let disconnect: () -> Void
+
+    var body: some View {
+        if isConnected {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.headline)
+                    .foregroundStyle(.teal)
+                    .frame(width: 34, height: 34)
+                    .background(.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Gmail receipt scan")
+                        .font(.subheadline.weight(.semibold))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button(isDisconnecting ? "Disconnecting" : "Disconnect") {
+                    disconnect()
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+                .disabled(isDisconnecting)
+            }
+            .padding(14)
+            .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    private var detail: String {
+        let scanStatus = lastScannedAt.map { "Last scan \(formattedTime($0))." } ?? "No live scan has run on this device yet."
+        return "\(scanStatus) Kai scans likely medical receipt and administrator messages, stores claim evidence, and stops scanning when Gmail is disconnected."
+    }
+
+    private func formattedTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
     }
 }
 
