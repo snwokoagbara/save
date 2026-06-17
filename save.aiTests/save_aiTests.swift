@@ -91,14 +91,13 @@ struct save_aiTests {
 
         #expect(!state.isReadyForEstimate)
         #expect(state.activeTasks.map(\.title).contains("Connect Gmail"))
-        #expect(state.activeTasks.map(\.title).contains("Link bank"))
+        #expect(!state.activeTasks.map(\.title).contains("Link bank"))
     }
 
-    @Test func mvpConnectsRequiredSourcesForFirstEstimate() async throws {
+    @Test func mvpConnectsGmailForFirstAutomaticEstimate() async throws {
         var state = SaveMVPState()
 
         state.connect(.gmail)
-        state.connect(.bank)
 
         #expect(state.isReadyForEstimate)
         #expect(!state.activeTasks.map(\.title).contains("Connect Gmail"))
@@ -362,7 +361,6 @@ struct save_aiTests {
 
         state.completeOnboarding()
         state.connect(.gmail)
-        state.connect(.bank)
         state.excludeFirstReviewItem()
         state.prepareFirstDraftClaim()
         state.exportTaxReport()

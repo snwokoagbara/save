@@ -1,11 +1,11 @@
 # SAVE
 
-SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA reimbursement and medical tax recovery money from receipts, email, and bank activity.
+SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA reimbursement and medical tax recovery money from receipts and email evidence.
 
 ## Current V1 Prototype
 
 - Assistant-native SwiftUI home screen.
-- Demo onboarding with Gmail and bank source toggles.
+- Demo onboarding with Gmail discovery and receipt-only paths.
 - Receipt import through sample data, photo picker, and Vision OCR.
 - Receipt review and line-item eligibility classification.
 - Receipt metadata and line-item editing during review.
@@ -44,6 +44,21 @@ Initial campaign assets:
 - Demo script: import receipt, review likely eligible amount, generate claim packet, mark submitted, track reimbursement.
 
 Launch posture: founder-led and evidence-led first. Avoid paid ads and broad App Store launch until the reviewed prototype is accepted and the onboarding flow has enough proof that users can complete a real claim from receipt to submitted status.
+
+## Gmail V1, Plaid V2
+
+Gmail is now part of V1 because it is central to the "hidden medical money" promise. Gmail can surface pharmacy receipts, provider bills, order confirmations, administrator messages, and reimbursement evidence that users forgot to upload. Plaid moves to V2 because transaction matching is valuable but usually lacks line-item detail and carries heavier financial-linking complexity.
+
+V1 Gmail implementation sequence:
+
+1. Add Google OAuth for Gmail connection, using the narrowest viable Gmail read scope.
+2. Store Gmail connection status in `source_connections` and keep refresh-token handling off-device.
+3. Search Gmail for likely medical, pharmacy, dental, vision, HSA/FSA, and administrator receipt evidence.
+4. Import found messages or attachments into the existing `receipts` review flow with source `gmail`.
+5. Let users review, correct, classify, generate claim packets, and track reimbursement from Gmail-sourced receipts.
+6. Add disconnect/revoke UX, last-scanned status, and clear privacy copy explaining what Kai scans.
+
+Public launch caveat: Google classifies broad Gmail read access such as `gmail.readonly` as a restricted scope. Prototype testing can start with test users, but public launch needs OAuth consent review and any required restricted-scope/security review before broad Gmail access is enabled.
 
 ## Build
 
@@ -92,6 +107,8 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 ## V1 Next Steps
 
 1. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-2. Run the final founder-led marketing phase after the reviewed V1 prototype is accepted.
-3. Defer Gmail OAuth and Plaid until after the marketing premise and real-claim workflow are validated.
-4. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.
+2. Implement Gmail OAuth and Gmail receipt discovery as the remaining V1 integration.
+3. Validate the hidden-medical-money premise with real Gmail-sourced receipts and completed claim packets.
+4. Run the final founder-led marketing phase after Gmail-backed V1 is accepted.
+5. Move Plaid bank matching to V2.
+6. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.

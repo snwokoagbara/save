@@ -57,11 +57,6 @@ private struct HomeView: View {
                             detail: "Find receipts from pharmacies, dentists, vision care, and administrators."
                         )
                         ActionRow(
-                            icon: "building.columns.fill",
-                            title: "Link bank",
-                            detail: "Catch medical purchases you forgot to upload."
-                        )
-                        ActionRow(
                             icon: "doc.viewfinder.fill",
                             title: "Prepare first claim",
                             detail: "\(claimPackets.first?.administratorName ?? "HealthEquity") packet is ready for review."
@@ -387,7 +382,7 @@ private struct ProfileView: View {
             List {
                 Section("Connected sources") {
                     ConnectionRow(title: "Gmail", state: "Ready to scan", symbol: "envelope.fill")
-                    ConnectionRow(title: "Plaid", state: "Bank match enabled", symbol: "building.columns.fill")
+                    ConnectionRow(title: "Plaid", state: "V2 bank match", symbol: "building.columns.fill")
                     ConnectionRow(title: "kai@ forwarding", state: "Personal inbox active", symbol: "tray.and.arrow.down.fill")
                 }
 

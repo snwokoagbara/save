@@ -179,7 +179,7 @@ struct SaveMVPState {
     }
 
     var isReadyForEstimate: Bool {
-        connectedSources.contains(.gmail) && connectedSources.contains(.bank)
+        connectedSources.contains(.gmail)
     }
 
     var summary: ClaimSummary {
@@ -202,19 +202,6 @@ struct SaveMVPState {
                     amount: nil,
                     actionTitle: "Connect",
                     symbol: "envelope.fill"
-                )
-            )
-        }
-
-        if !connectedSources.contains(.bank) {
-            tasks.append(
-                MVPTask(
-                    id: "link-bank",
-                    title: "Link bank",
-                    detail: "Match card charges to receipts and surface claims you forgot.",
-                    amount: nil,
-                    actionTitle: "Link bank",
-                    symbol: "building.columns.fill"
                 )
             )
         }
@@ -599,8 +586,6 @@ struct SaveMVPState {
         switch task.id {
         case "connect-gmail":
             connect(.gmail)
-        case "link-bank":
-            connect(.bank)
         case let taskID where taskID.hasPrefix("review-receipt-"):
             excludeFirstReviewItem()
         case "prepare-health-equity":

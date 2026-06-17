@@ -99,7 +99,6 @@ struct AssistantNativeContentView: View {
                             updateState {
                                 $0.completeOnboarding()
                                 $0.connect(.gmail)
-                                $0.connect(.bank)
                             }
                         },
                         startReceiptOnly: {
@@ -553,7 +552,7 @@ private struct OnboardingView: View {
                 Text("Kai finds medical money you can claim back.")
                     .font(.largeTitle.weight(.bold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Start with demo Gmail and bank sources, or continue with receipt upload only. Live integrations come after the claim and export loop is solid.")
+                Text("Start with demo Gmail discovery, or continue with receipt upload only. Live Gmail comes into V1; Plaid moves to V2.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -637,7 +636,7 @@ private struct AssistantHero: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Kai is working")
                         .font(.title2.weight(.bold))
-                    Text("Scanning receipts, matching bank charges, and preparing claims.")
+                    Text("Scanning receipts, finding email evidence, and preparing claims.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -665,14 +664,6 @@ private struct AssistantHero: View {
                 ) {
                     connect(.gmail)
                 }
-                AssistantSourceButton(
-                    title: "Bank match",
-                    state: state.connectedSources.contains(.bank) ? "on" : "off",
-                    symbol: "building.columns.fill",
-                    isConnected: state.connectedSources.contains(.bank)
-                ) {
-                    connect(.bank)
-                }
             }
         }
         .padding(20)
@@ -681,7 +672,7 @@ private struct AssistantHero: View {
 
     private var statusLine: String {
         if !state.isReadyForEstimate {
-            return "Connect Gmail and bank to let Kai calculate the first claim-back estimate."
+            return "Connect Gmail or upload receipts to let Kai calculate the first claim-back estimate."
         }
 
         return state.summary.assistantStatusLine
