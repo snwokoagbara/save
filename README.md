@@ -51,14 +51,19 @@ Gmail is now part of V1 because it is central to the "hidden medical money" prom
 
 V1 Gmail implementation sequence:
 
-1. Add Google OAuth for Gmail connection, using the narrowest viable Gmail read scope. The JWT-protected `gmail-oauth-start` Edge Function is deployed as the first backend step.
-2. Store Gmail connection status in `source_connections` and keep refresh-token handling off-device. The table now supports provider subject, OAuth scopes, and non-secret provider metadata.
+1. Add Google OAuth for Gmail connection, using the narrowest viable Gmail read scope. The JWT-protected `gmail-oauth-start` and `gmail-oauth-callback` Edge Functions are deployed with PKCE support.
+2. Store Gmail connection status in `source_connections` and keep refresh-token handling off-device. The table now supports provider subject, OAuth scopes, and non-secret provider metadata; refresh tokens are stored encrypted in `private.gmail_oauth_tokens`.
 3. Search Gmail for likely medical, pharmacy, dental, vision, HSA/FSA, and administrator receipt evidence.
 4. Import found messages or attachments into the existing `receipts` review flow with source `gmail`.
 5. Let users review, correct, classify, generate claim packets, and track reimbursement from Gmail-sourced receipts.
 6. Add disconnect/revoke UX, last-scanned status, and clear privacy copy explaining what Kai scans.
 
-Before live Gmail testing, configure the Supabase Edge Function secret `GOOGLE_OAUTH_CLIENT_ID` with the Google OAuth client ID. Optionally set `GMAIL_OAUTH_SCOPES`; if omitted, the function requests `https://www.googleapis.com/auth/gmail.readonly`.
+Before live Gmail testing, configure these Supabase Edge Function secrets:
+
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GMAIL_TOKEN_ENCRYPTION_KEY`
+- `GOOGLE_OAUTH_CLIENT_SECRET` only if the selected Google OAuth client type requires it
+- `GMAIL_OAUTH_SCOPES` optionally; if omitted, the function requests `https://www.googleapis.com/auth/gmail.readonly`
 
 Public launch caveat: Google classifies broad Gmail read access such as `gmail.readonly` as a restricted scope. Prototype testing can start with test users, but public launch needs OAuth consent review and any required restricted-scope/security review before broad Gmail access is enabled.
 
@@ -105,15 +110,14 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 - June 15, 2026: Signed-in simulator QA restored first-class Supabase rows, ignored stale claim packets with no joined items, and showed 3 claim packets in the app while the QA database still retained 4 historical claim packet rows and 3 claim packet item rows.
 - June 16, 2026: Simulator QA verified HealthEquity claim submission tracking from a ready packet through submitted state, including method, confirmation number, notes, and PDF submission-detail text.
 - June 17, 2026: Build-for-testing verified Supabase-managed administrator template loading, local fallback merging, and managed claim packet document generation.
-- June 17, 2026: Deployed the JWT-protected `gmail-oauth-start` Supabase Edge Function and verified Gmail source-connection metadata columns in the live project.
+- June 17, 2026: Deployed the JWT-protected `gmail-oauth-start` and `gmail-oauth-callback` Supabase Edge Functions, verified Gmail source-connection metadata columns, and created private encrypted Gmail token storage in the live project.
 
 ## V1 Next Steps
 
 1. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-2. Configure Google OAuth and the `GOOGLE_OAUTH_CLIENT_ID` Edge Function secret.
-3. Implement the Gmail OAuth callback/token exchange Edge Function with encrypted off-device refresh-token storage.
-4. Implement Gmail receipt search/import into the existing receipt review flow.
-5. Validate the hidden-medical-money premise with real Gmail-sourced receipts and completed claim packets.
-6. Run the final founder-led marketing phase after Gmail-backed V1 is accepted.
-7. Move Plaid bank matching to V2.
-8. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.
+2. Configure Google OAuth and the required Edge Function secrets.
+3. Implement Gmail receipt search/import into the existing receipt review flow.
+4. Validate the hidden-medical-money premise with real Gmail-sourced receipts and completed claim packets.
+5. Run the final founder-led marketing phase after Gmail-backed V1 is accepted.
+6. Move Plaid bank matching to V2.
+7. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.

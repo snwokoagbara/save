@@ -3,6 +3,8 @@
 
 create extension if not exists pgcrypto;
 
+create schema if not exists private;
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -95,6 +97,19 @@ create table if not exists public.source_connections (
   updated_at timestamptz not null default now(),
   unique (user_id, kind)
 );
+
+create table if not exists private.gmail_oauth_tokens (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  provider_subject text,
+  encrypted_refresh_token text not null,
+  access_token_expires_at timestamptz,
+  scope text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+revoke all on schema private from anon, authenticated;
+revoke all on all tables in schema private from anon, authenticated;
 
 alter table public.source_connections
 add column if not exists provider_subject text;

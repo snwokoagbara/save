@@ -336,7 +336,8 @@ struct save_aiTests {
             responseData: """
             {
               "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth?state=gmail-state",
-              "state": "gmail-state"
+              "state": "gmail-state",
+              "code_verifier": "gmail-code-verifier"
             }
             """.data(using: .utf8)!
         )
@@ -368,8 +369,70 @@ struct save_aiTests {
         #expect(json.contains("\"redirect_uri\":\"saveai:\\/\\/gmail-oauth-callback\""))
         #expect(start == GmailAuthorizationStart(
             authorizationURL: URL(string: "https://accounts.google.com/o/oauth2/v2/auth?state=gmail-state")!,
-            state: "gmail-state"
+            state: "gmail-state",
+            codeVerifier: "gmail-code-verifier"
         ))
+    }
+
+    @Test func supabaseGmailConnectionControllerBuildsAuthenticatedCallbackRequest() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "status": "connected",
+              "provider_account_label": "kai@example.com",
+              "last_synced_at": "2026-06-17T06:00:00Z",
+              "error_code": null
+            }
+            """.data(using: .utf8)!
+        )
+        let controller = SupabaseRESTGmailConnectionController(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            redirectURI: URL(string: "saveai://gmail-oauth-callback")!,
+            httpClient: client
+        )
+
+        let connection = try await controller.completeAuthorization(
+            code: "google-auth-code",
+            state: "gmail-state",
+            codeVerifier: "gmail-code-verifier"
+        )
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/functions/v1/gmail-oauth-callback")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let body = try #require(request.httpBody)
+        let json = try #require(String(data: body, encoding: .utf8))
+        #expect(json.contains("\"code\":\"google-auth-code\""))
+        #expect(json.contains("\"state\":\"gmail-state\""))
+        #expect(json.contains("\"code_verifier\":\"gmail-code-verifier\""))
+        #expect(json.contains("\"redirect_uri\":\"saveai:\\/\\/gmail-oauth-callback\""))
+        #expect(connection == GmailConnection(
+            status: .connected,
+            accountLabel: "kai@example.com",
+            lastSyncedAt: Date(timeIntervalSince1970: 1_797_136_400),
+            errorCode: nil
+        ))
+    }
+
+    @Test func gmailOAuthCallbackParsesOnlyExpectedDeepLink() async throws {
+        let callback = try #require(GmailOAuthCallback(url: URL(string: "saveai://gmail-oauth-callback?code=google-auth-code&state=gmail-state")!))
+
+        #expect(callback.code == "google-auth-code")
+        #expect(callback.state == "gmail-state")
+        #expect(GmailOAuthCallback(url: URL(string: "saveai://other?code=google-auth-code&state=gmail-state")!) == nil)
+        #expect(GmailOAuthCallback(url: URL(string: "saveai://gmail-oauth-callback?state=gmail-state")!) == nil)
     }
 
     @Test func supabaseGmailConnectionLoaderDecodesSourceConnectionStatus() async throws {

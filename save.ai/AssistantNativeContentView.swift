@@ -3,13 +3,18 @@ import SwiftUI
 import UIKit
 
 struct AssistantNativeContentView: View {
+    @Environment(\.openURL) private var openURL
     private let progressStoreFactory: (@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring
     private let remoteProgressLoaderFactory: (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading?
     private let administratorTemplateLoaderFactory: (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading?
+    private let gmailConnectionControllerFactory: (SupabaseAuthSession) -> GmailConnectionStarting?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
     @State private var administratorTemplates: [ClaimAdministratorTemplate]
+    @State private var pendingGmailAuthorizationStart: GmailAuthorizationStart?
+    @State private var gmailConnectionError: String?
+    @State private var isConnectingGmail = false
     @State private var authSession: SupabaseAuthSession?
     @State private var remoteSyncStatus: SaveMVPRemoteSyncStatus?
     @State private var hasAttemptedRemoteProgressLoad = false
@@ -25,12 +30,14 @@ struct AssistantNativeContentView: View {
         progressStoreFactory: (((@escaping (SaveMVPRemoteSyncStatus) -> Void) -> SaveMVPProgressStoring))? = nil,
         remoteProgressLoaderFactory: @escaping (SupabaseAuthSession) -> SaveMVPRemoteProgressLoading? = { _ in nil },
         administratorTemplateLoaderFactory: @escaping (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading? = { _ in nil },
+        gmailConnectionControllerFactory: @escaping (SupabaseAuthSession) -> GmailConnectionStarting? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
         self.progressStoreFactory = progressStoreFactory ?? { _ in progressStore }
         self.remoteProgressLoaderFactory = remoteProgressLoaderFactory
         self.administratorTemplateLoaderFactory = administratorTemplateLoaderFactory
+        self.gmailConnectionControllerFactory = gmailConnectionControllerFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
@@ -64,6 +71,12 @@ struct AssistantNativeContentView: View {
             },
             administratorTemplateLoaderFactory: { session in
                 ClaimAdministratorTemplateLoaderFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
+            gmailConnectionControllerFactory: { session in
+                GmailConnectionControllerFactory.make(
                     environment: environment,
                     session: session
                 )
@@ -165,6 +178,9 @@ struct AssistantNativeContentView: View {
         .onAppear {
             configureProgressStore()
         }
+        .onOpenURL { url in
+            handleGmailCallback(url)
+        }
         .onChange(of: isShowingReceiptIntake) { _, isPresented in
             guard !isPresented,
                   let receiptID = pendingReviewReceiptID else {
@@ -180,9 +196,19 @@ struct AssistantNativeContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 AssistantHero(state: state) { source in
-                    updateState {
-                        $0.connect(source)
+                    if source == .gmail {
+                        startGmailConnection()
+                    } else {
+                        updateState {
+                            $0.connect(source)
+                        }
                     }
+                }
+                if let gmailConnectionError {
+                    Text(gmailConnectionError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 4)
                 }
                 AccountStatusView(
                     authSession: authSession,
@@ -319,6 +345,88 @@ struct AssistantNativeContentView: View {
 
     private func syncNow() {
         progressStore.save(state.persisted)
+    }
+
+    private func startGmailConnection() {
+        gmailConnectionError = nil
+
+        guard let authSession else {
+            if signInController != nil {
+                isShowingSignIn = true
+            } else {
+                updateState {
+                    $0.connect(.gmail)
+                }
+            }
+            return
+        }
+
+        guard let controller = gmailConnectionControllerFactory(authSession) else {
+            updateState {
+                $0.connect(.gmail)
+            }
+            return
+        }
+
+        isConnectingGmail = true
+        Task {
+            do {
+                let start = try await controller.startAuthorization()
+                await MainActor.run {
+                    pendingGmailAuthorizationStart = start
+                    isConnectingGmail = false
+                    openURL(start.authorizationURL)
+                }
+            } catch {
+                await MainActor.run {
+                    isConnectingGmail = false
+                    gmailConnectionError = "Gmail connection could not start. Check Google OAuth configuration."
+                }
+            }
+        }
+    }
+
+    private func handleGmailCallback(_ url: URL) {
+        guard let callback = GmailOAuthCallback(url: url),
+              let pendingGmailAuthorizationStart else {
+            return
+        }
+
+        guard callback.state == pendingGmailAuthorizationStart.state else {
+            gmailConnectionError = "Gmail connection returned an unexpected state. Try connecting again."
+            self.pendingGmailAuthorizationStart = nil
+            return
+        }
+
+        guard let authSession,
+              let controller = gmailConnectionControllerFactory(authSession) else {
+            gmailConnectionError = "Sign in again before completing Gmail."
+            return
+        }
+
+        isConnectingGmail = true
+        Task {
+            do {
+                _ = try await controller.completeAuthorization(
+                    code: callback.code,
+                    state: callback.state,
+                    codeVerifier: pendingGmailAuthorizationStart.codeVerifier
+                )
+                await MainActor.run {
+                    self.pendingGmailAuthorizationStart = nil
+                    isConnectingGmail = false
+                    updateState {
+                        $0.connect(.gmail)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.pendingGmailAuthorizationStart = nil
+                    isConnectingGmail = false
+                    gmailConnectionError = "Gmail connection could not finish. Check OAuth secrets and try again."
+                }
+            }
+        }
     }
 
     private func configureProgressStore() {

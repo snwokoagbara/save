@@ -158,6 +158,7 @@ protocol ClaimAdministratorTemplateLoading {
 struct GmailAuthorizationStart: Equatable {
     let authorizationURL: URL
     let state: String
+    let codeVerifier: String
 }
 
 enum GmailConnectionStatus: String, Codable, Equatable {
@@ -174,8 +175,29 @@ struct GmailConnection: Equatable {
     let errorCode: String?
 }
 
+struct GmailOAuthCallback: Equatable {
+    let code: String
+    let state: String
+
+    init?(url: URL) {
+        guard url.scheme == "saveai",
+              url.host == "gmail-oauth-callback",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let code = components.queryItems?.first(where: { $0.name == "code" })?.value,
+              let state = components.queryItems?.first(where: { $0.name == "state" })?.value,
+              !code.isEmpty,
+              !state.isEmpty else {
+            return nil
+        }
+
+        self.code = code
+        self.state = state
+    }
+}
+
 protocol GmailConnectionStarting {
     func startAuthorization() async throws -> GmailAuthorizationStart
+    func completeAuthorization(code: String, state: String, codeVerifier: String) async throws -> GmailConnection
 }
 
 protocol GmailConnectionLoading {
@@ -758,6 +780,16 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
         return try response.start()
     }
 
+    func completeAuthorization(code: String, state: String, codeVerifier: String) async throws -> GmailConnection {
+        guard let request = makeCallbackRequest(code: code, state: state, codeVerifier: codeVerifier) else {
+            throw SupabaseAuthError.invalidURL
+        }
+
+        let data = try await httpClient.data(for: request)
+        let response = try JSONDecoder.saveMVP.decode(ConnectionResponse.self, from: data)
+        return response.connection
+    }
+
     private func makeRequest() -> URLRequest? {
         let url = configuration.projectURL
             .appendingPathComponent("functions")
@@ -767,6 +799,29 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = try? JSONEncoder.saveMVP.encode(StartPayload(redirectURI: redirectURI.absoluteString))
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func makeCallbackRequest(code: String, state: String, codeVerifier: String) -> URLRequest? {
+        let url = configuration.projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("gmail-oauth-callback")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = try? JSONEncoder.saveMVP.encode(
+            CallbackPayload(
+                code: code,
+                state: state,
+                codeVerifier: codeVerifier,
+                redirectURI: redirectURI.absoluteString
+            )
+        )
         request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -785,10 +840,12 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
     private struct StartResponse: Decodable {
         let authorizationURL: String
         let state: String
+        let codeVerifier: String
 
         enum CodingKeys: String, CodingKey {
             case authorizationURL = "authorization_url"
             case state
+            case codeVerifier = "code_verifier"
         }
 
         func start() throws -> GmailAuthorizationStart {
@@ -796,7 +853,44 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting {
                 throw SupabaseAuthError.invalidURL
             }
 
-            return GmailAuthorizationStart(authorizationURL: url, state: state)
+            return GmailAuthorizationStart(authorizationURL: url, state: state, codeVerifier: codeVerifier)
+        }
+    }
+
+    private struct CallbackPayload: Encodable {
+        let code: String
+        let state: String
+        let codeVerifier: String
+        let redirectURI: String
+
+        enum CodingKeys: String, CodingKey {
+            case code
+            case state
+            case codeVerifier = "code_verifier"
+            case redirectURI = "redirect_uri"
+        }
+    }
+
+    private struct ConnectionResponse: Decodable {
+        let status: GmailConnectionStatus
+        let providerAccountLabel: String?
+        let lastSyncedAt: Date?
+        let errorCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case status
+            case providerAccountLabel = "provider_account_label"
+            case lastSyncedAt = "last_synced_at"
+            case errorCode = "error_code"
+        }
+
+        var connection: GmailConnection {
+            GmailConnection(
+                status: status,
+                accountLabel: providerAccountLabel,
+                lastSyncedAt: lastSyncedAt,
+                errorCode: errorCode
+            )
         }
     }
 }
@@ -1929,6 +2023,25 @@ enum ClaimAdministratorTemplateLoaderFactory {
         return SupabaseRESTClaimAdministratorTemplateLoader(
             configuration: configuration,
             session: session
+        )
+    }
+}
+
+enum GmailConnectionControllerFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: SupabaseAuthSession
+    ) -> GmailConnectionStarting? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
+              session.isUsable(),
+              let redirectURI = URL(string: "saveai://gmail-oauth-callback") else {
+            return nil
+        }
+
+        return SupabaseRESTGmailConnectionController(
+            configuration: configuration,
+            session: session,
+            redirectURI: redirectURI
         )
     }
 }
