@@ -53,10 +53,11 @@ V1 Gmail implementation sequence:
 
 1. Add Google OAuth for Gmail connection, using the narrowest viable Gmail read scope. The JWT-protected `gmail-oauth-start` and `gmail-oauth-callback` Edge Functions are deployed with PKCE support.
 2. Store Gmail connection status in `source_connections` and keep refresh-token handling off-device. The table now supports provider subject, OAuth scopes, and non-secret provider metadata; refresh tokens are stored encrypted in `private.gmail_oauth_tokens`.
-3. Search Gmail for likely medical, pharmacy, dental, vision, HSA/FSA, and administrator receipt evidence. The JWT-protected `gmail-receipt-import` Edge Function is deployed for this scan.
-4. Import found messages into the existing `receipts` review flow with source `gmail`; imported Gmail message IDs are tracked in `private.gmail_imported_messages` to avoid duplicates.
-5. Let users review, correct, classify, generate claim packets, and track reimbursement from Gmail-sourced receipts.
-6. Add disconnect/revoke UX, last-scanned status, and clear privacy copy explaining what Kai scans.
+3. Check Gmail backend readiness before OAuth or import attempts. The JWT-protected `gmail-v1-preflight` Edge Function reports missing required secrets so the app can fail clearly instead of sending users into a broken Google flow.
+4. Search Gmail for likely medical, pharmacy, dental, vision, HSA/FSA, and administrator receipt evidence. The JWT-protected `gmail-receipt-import` Edge Function is deployed for this scan.
+5. Import found messages into the existing `receipts` review flow with source `gmail`; imported Gmail message IDs are tracked in `private.gmail_imported_messages` to avoid duplicates.
+6. Let users review, correct, classify, generate claim packets, and track reimbursement from Gmail-sourced receipts.
+7. Add disconnect/revoke UX, last-scanned status, and clear privacy copy explaining what Kai scans.
 
 Before live Gmail testing, configure these Supabase Edge Function secrets:
 
@@ -113,12 +114,13 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 - June 16, 2026: Simulator QA verified HealthEquity claim submission tracking from a ready packet through submitted state, including method, confirmation number, notes, and PDF submission-detail text.
 - June 17, 2026: Build-for-testing verified Supabase-managed administrator template loading, local fallback merging, and managed claim packet document generation.
 - June 17, 2026: Deployed the JWT-protected `gmail-oauth-start`, `gmail-oauth-callback`, and `gmail-receipt-import` Supabase Edge Functions, verified Gmail source-connection metadata columns, and created private encrypted Gmail token/import storage in the live project.
+- June 17, 2026: Added Gmail V1 preflight checks so the app reports missing backend secrets before OAuth or Gmail import attempts.
 
 ## V1 Next Steps
 
 1. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
 2. Configure Google OAuth and the required Edge Function secrets.
-3. Validate Gmail OAuth and receipt import with a real test Google account.
+3. Validate `gmail-v1-preflight`, Gmail OAuth, and receipt import with a real test Google account.
 4. Validate the hidden-medical-money premise with real Gmail-sourced receipts and completed claim packets.
 5. Run the final founder-led marketing phase after Gmail-backed V1 is accepted.
 6. Move Plaid bank matching to V2.

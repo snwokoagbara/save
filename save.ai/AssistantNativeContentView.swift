@@ -9,6 +9,7 @@ struct AssistantNativeContentView: View {
     private let administratorTemplateLoaderFactory: (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading?
     private let gmailConnectionControllerFactory: (SupabaseAuthSession) -> GmailConnectionStarting?
     private let gmailReceiptImporterFactory: (SupabaseAuthSession) -> GmailReceiptImporting?
+    private let gmailConfigurationCheckerFactory: (SupabaseAuthSession) -> GmailConfigurationChecking?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
@@ -34,6 +35,7 @@ struct AssistantNativeContentView: View {
         administratorTemplateLoaderFactory: @escaping (SupabaseAuthSession) -> ClaimAdministratorTemplateLoading? = { _ in nil },
         gmailConnectionControllerFactory: @escaping (SupabaseAuthSession) -> GmailConnectionStarting? = { _ in nil },
         gmailReceiptImporterFactory: @escaping (SupabaseAuthSession) -> GmailReceiptImporting? = { _ in nil },
+        gmailConfigurationCheckerFactory: @escaping (SupabaseAuthSession) -> GmailConfigurationChecking? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
@@ -42,6 +44,7 @@ struct AssistantNativeContentView: View {
         self.administratorTemplateLoaderFactory = administratorTemplateLoaderFactory
         self.gmailConnectionControllerFactory = gmailConnectionControllerFactory
         self.gmailReceiptImporterFactory = gmailReceiptImporterFactory
+        self.gmailConfigurationCheckerFactory = gmailConfigurationCheckerFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
@@ -87,6 +90,12 @@ struct AssistantNativeContentView: View {
             },
             gmailReceiptImporterFactory: { session in
                 GmailReceiptImporterFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
+            gmailConfigurationCheckerFactory: { session in
+                GmailConfigurationCheckerFactory.make(
                     environment: environment,
                     session: session
                 )
@@ -385,6 +394,17 @@ struct AssistantNativeContentView: View {
         isConnectingGmail = true
         Task {
             do {
+                if let checker = gmailConfigurationCheckerFactory(authSession) {
+                    let configuration = try await checker.check()
+                    guard configuration.isConfigured else {
+                        await MainActor.run {
+                            isConnectingGmail = false
+                            gmailConnectionError = gmailConfigurationErrorMessage(configuration)
+                        }
+                        return
+                    }
+                }
+
                 let start = try await controller.startAuthorization()
                 await MainActor.run {
                     pendingGmailAuthorizationStart = start
@@ -455,6 +475,17 @@ struct AssistantNativeContentView: View {
         isImportingGmail = true
         Task {
             do {
+                if let checker = gmailConfigurationCheckerFactory(authSession) {
+                    let configuration = try await checker.check()
+                    guard configuration.isConfigured else {
+                        await MainActor.run {
+                            isImportingGmail = false
+                            gmailConnectionError = gmailConfigurationErrorMessage(configuration)
+                        }
+                        return
+                    }
+                }
+
                 let result = try await importer.importReceipts()
                 await MainActor.run {
                     isImportingGmail = false
@@ -471,6 +502,11 @@ struct AssistantNativeContentView: View {
                 }
             }
         }
+    }
+
+    private func gmailConfigurationErrorMessage(_ status: GmailConfigurationStatus) -> String {
+        let missing = status.missing.isEmpty ? "unknown Gmail secret" : status.missing.joined(separator: ", ")
+        return "Gmail V1 is not configured yet. Missing: \(missing)."
     }
 
     private func configureProgressStore() {

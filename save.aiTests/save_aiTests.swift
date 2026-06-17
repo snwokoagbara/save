@@ -421,7 +421,7 @@ struct save_aiTests {
         #expect(connection == GmailConnection(
             status: .connected,
             accountLabel: "kai@example.com",
-            lastSyncedAt: Date(timeIntervalSince1970: 1_797_136_400),
+            lastSyncedAt: Date(timeIntervalSince1970: 1_781_676_000),
             errorCode: nil
         ))
     }
@@ -469,6 +469,42 @@ struct save_aiTests {
         #expect(result == GmailReceiptImportResult(importedReceiptCount: 2, importedLineItemCount: 2))
     }
 
+    @Test func supabaseGmailConfigurationCheckerBuildsAuthenticatedPreflightRequest() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "is_configured": false,
+              "missing": ["GOOGLE_OAUTH_CLIENT_ID", "GMAIL_TOKEN_ENCRYPTION_KEY"]
+            }
+            """.data(using: .utf8)!
+        )
+        let checker = SupabaseRESTGmailConfigurationChecker(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+
+        let status = try await checker.check()
+
+        let request = try #require(client.requests.first)
+        #expect(request.url?.absoluteString == "https://example.supabase.co/functions/v1/gmail-v1-preflight")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "apikey") == "publishable-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer user-access-token")
+        #expect(status == GmailConfigurationStatus(
+            isConfigured: false,
+            missing: ["GOOGLE_OAUTH_CLIENT_ID", "GMAIL_TOKEN_ENCRYPTION_KEY"]
+        ))
+    }
+
     @Test func supabaseGmailConnectionLoaderDecodesSourceConnectionStatus() async throws {
         let client = CapturingSupabaseAuthHTTPClient(
             responseData: """
@@ -504,7 +540,7 @@ struct save_aiTests {
         #expect(connection == GmailConnection(
             status: .connected,
             accountLabel: "kai@example.com",
-            lastSyncedAt: Date(timeIntervalSince1970: 1_797_136_400),
+            lastSyncedAt: Date(timeIntervalSince1970: 1_781_676_000),
             errorCode: nil
         ))
     }
