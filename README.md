@@ -17,6 +17,34 @@ SAVE is an iOS MVP for Kai, an AI-native assistant that helps users find HSA/FSA
 - Supabase first-class table sync/restore for receipts, receipt line items, claim packets, claim packet items, and tax exports.
 - Account sync status, failure messaging, and manual sync retry.
 
+## Final Phase: Market Pain and Launch Premise
+
+Research across HSA/FSA administrators and receipt-savings apps points to one strong launch opening: users are tired of fighting broken reimbursement workflows. The recurring pain is not just "saving money"; it is rejected receipts, unclear claim requirements, confusing portals, delayed or missing reimbursement, weak support, and low trust when apps say money has been found but do not help users recover it.
+
+SAVE should launch V1 around this premise:
+
+> Find hidden medical money without fighting broken HSA/FSA portals.
+
+This keeps the campaign tied to what Kai can support today. Kai does not guarantee reimbursement or provide tax advice. Kai helps users find likely claimable expenses, prepare evidence-backed claim packets, track what was submitted, and export medical-expense records for tax review.
+
+V1 maps directly to the market pain:
+
+- Receipt OCR and receipt review reduce scan and rejection risk by letting users inspect the evidence before a claim is prepared.
+- Claim packet generation reduces confusing HSA/FSA documentation work by turning eligible line items into administrator-ready evidence.
+- Submission and reimbursement tracking reduce portal visibility gaps by recording method, confirmation number, notes, status, and reimbursed outcomes.
+- Supabase-managed administrator templates reduce inconsistent administrator workflows by keeping HealthEquity, Inspira, and WEX requirements editable outside the app release cycle.
+- CSV/PDF tax export supports year-end medical-expense recovery when users need itemized backup for a CPA or tax software.
+
+Initial campaign assets:
+
+- Landing page hero: "Find hidden medical money."
+- Supporting line: "Kai scans your medical receipts, prepares HSA/FSA claim packets, and helps you track what is submitted and reimbursed."
+- Founder-led post angle: "Your FSA/HSA admin should not make you forfeit your own money."
+- Community outreach: FSA/HSA users, parents managing family medical receipts, and employees in benefits-heavy workplaces.
+- Demo script: import receipt, review likely eligible amount, generate claim packet, mark submitted, track reimbursement.
+
+Launch posture: founder-led and evidence-led first. Avoid paid ads and broad App Store launch until the reviewed prototype is accepted and the onboarding flow has enough proof that users can complete a real claim from receipt to submitted status.
+
 ## Build
 
 Open `save.ai.xcodeproj` in Xcode, or build from this folder:
@@ -64,5 +92,6 @@ Do not put `service_role`, secret keys, or hand-copied access tokens in iOS app 
 ## V1 Next Steps
 
 1. Enable Supabase leaked-password protection in the dashboard if the project plan supports it.
-2. Defer Gmail OAuth and Plaid until after the reviewed V1 prototype is accepted.
-3. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.
+2. Run the final founder-led marketing phase after the reviewed V1 prototype is accepted.
+3. Defer Gmail OAuth and Plaid until after the marketing premise and real-claim workflow are validated.
+4. Decide whether to add a cleanup migration for historical QA-only claim packet rows with no `claim_packet_items`; the app now ignores them during restore.
