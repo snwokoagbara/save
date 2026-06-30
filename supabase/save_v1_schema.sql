@@ -122,6 +122,112 @@ on private.gmail_imported_messages(receipt_id);
 revoke all on schema private from anon, authenticated;
 revoke all on all tables in schema private from anon, authenticated;
 
+create or replace function public.upsert_gmail_oauth_token(
+  p_user_id uuid,
+  p_provider_subject text,
+  p_encrypted_refresh_token text,
+  p_access_token_expires_at timestamptz,
+  p_scope text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = private, public, pg_temp
+as $$
+begin
+  insert into private.gmail_oauth_tokens (
+    user_id,
+    provider_subject,
+    encrypted_refresh_token,
+    access_token_expires_at,
+    scope,
+    updated_at
+  ) values (
+    p_user_id,
+    p_provider_subject,
+    p_encrypted_refresh_token,
+    p_access_token_expires_at,
+    coalesce(p_scope, '{}'::text[]),
+    now()
+  )
+  on conflict (user_id) do update set
+    provider_subject = excluded.provider_subject,
+    encrypted_refresh_token = excluded.encrypted_refresh_token,
+    access_token_expires_at = excluded.access_token_expires_at,
+    scope = excluded.scope,
+    updated_at = now();
+end;
+$$;
+
+create or replace function public.delete_gmail_oauth_token(p_user_id uuid)
+returns void
+language sql
+security definer
+set search_path = private, public, pg_temp
+as $$
+  delete from private.gmail_oauth_tokens
+  where user_id = p_user_id;
+$$;
+
+create or replace function public.gmail_oauth_token_for(p_user_id uuid)
+returns table(encrypted_refresh_token text)
+language sql
+security definer
+set search_path = private, public, pg_temp
+as $$
+  select token.encrypted_refresh_token
+  from private.gmail_oauth_tokens token
+  where token.user_id = p_user_id
+  limit 1;
+$$;
+
+create or replace function public.has_gmail_imported_message(
+  p_user_id uuid,
+  p_gmail_message_id text
+)
+returns boolean
+language sql
+security definer
+set search_path = private, public, pg_temp
+as $$
+  select exists (
+    select 1
+    from private.gmail_imported_messages imported
+    where imported.user_id = p_user_id
+      and imported.gmail_message_id = p_gmail_message_id
+  );
+$$;
+
+create or replace function public.insert_gmail_imported_message(
+  p_user_id uuid,
+  p_gmail_message_id text,
+  p_receipt_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = private, public, pg_temp
+as $$
+begin
+  insert into private.gmail_imported_messages (user_id, gmail_message_id, receipt_id)
+  values (p_user_id, p_gmail_message_id, p_receipt_id)
+  on conflict (user_id, gmail_message_id) do update set
+    receipt_id = excluded.receipt_id;
+end;
+$$;
+
+revoke all on function public.upsert_gmail_oauth_token(uuid, text, text, timestamptz, text[]) from public, anon, authenticated;
+revoke all on function public.delete_gmail_oauth_token(uuid) from public, anon, authenticated;
+revoke all on function public.gmail_oauth_token_for(uuid) from public, anon, authenticated;
+revoke all on function public.has_gmail_imported_message(uuid, text) from public, anon, authenticated;
+revoke all on function public.insert_gmail_imported_message(uuid, text, uuid) from public, anon, authenticated;
+
+grant execute on function public.upsert_gmail_oauth_token(uuid, text, text, timestamptz, text[]) to service_role;
+grant execute on function public.delete_gmail_oauth_token(uuid) to service_role;
+grant execute on function public.gmail_oauth_token_for(uuid) to service_role;
+grant execute on function public.has_gmail_imported_message(uuid, text) to service_role;
+grant execute on function public.insert_gmail_imported_message(uuid, text, uuid) to service_role;
+
 alter table public.source_connections
 add column if not exists provider_subject text;
 

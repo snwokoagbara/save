@@ -44,21 +44,19 @@ Deno.serve(async (request: Request) => {
   const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
   const googleClientID = requireEnv("GOOGLE_OAUTH_CLIENT_ID");
   const tokenEncryptionKey = requireEnv("GMAIL_TOKEN_ENCRYPTION_KEY");
-  const supabase = createClient(supabaseURL, serviceRoleKey, {
+  const userClient = createClient(supabaseURL, serviceRoleKey, {
     global: { headers: { Authorization: authorization } },
   });
+  const serviceClient = createClient(supabaseURL, serviceRoleKey);
 
-  const { data: userData, error: userError } = await supabase.auth.getUser();
+  const { data: userData, error: userError } = await userClient.auth.getUser();
   if (userError || !userData.user) {
     return jsonResponse({ error: "invalid_user_session" }, 401);
   }
 
-  const { data: tokenRow, error: tokenError } = await supabase
-    .schema("private")
-    .from("gmail_oauth_tokens")
-    .select("encrypted_refresh_token")
-    .eq("user_id", userData.user.id)
-    .maybeSingle<TokenRow>();
+  const { data: tokenRows, error: tokenError } = await serviceClient
+    .rpc("gmail_oauth_token_for", { p_user_id: userData.user.id });
+  const tokenRow = firstTokenRow(tokenRows);
   if (tokenError || !tokenRow) {
     return jsonResponse({ error: "gmail_not_connected" }, 409);
   }
@@ -70,7 +68,7 @@ Deno.serve(async (request: Request) => {
     clientSecret: Deno.env.get("GOOGLE_OAUTH_CLIENT_SECRET") ?? undefined,
   });
   if (!tokenResponse.access_token) {
-    await markConnectionFailed(supabase, userData.user.id, tokenResponse.error ?? "gmail_refresh_failed");
+    await markConnectionFailed(serviceClient, userData.user.id, tokenResponse.error ?? "gmail_refresh_failed");
     return jsonResponse({ error: tokenResponse.error ?? "gmail_refresh_failed" }, 502);
   }
 
@@ -82,7 +80,7 @@ Deno.serve(async (request: Request) => {
   let importedLineItemCount = 0;
 
   for (const messageRef of messages.messages ?? []) {
-    const alreadyImported = await hasImportedMessage(supabase, userData.user.id, messageRef.id);
+    const alreadyImported = await hasImportedMessage(serviceClient, userData.user.id, messageRef.id);
     if (alreadyImported) {
       continue;
     }
@@ -96,7 +94,7 @@ Deno.serve(async (request: Request) => {
     const receiptID = crypto.randomUUID();
     const merchant = merchantName(message) ?? "Gmail receipt";
     const purchasedAt = purchasedDate(message);
-    const { error: receiptError } = await supabase
+    const { error: receiptError } = await serviceClient
       .from("receipts")
       .insert({
         id: receiptID,
@@ -117,7 +115,7 @@ Deno.serve(async (request: Request) => {
       continue;
     }
 
-    const { error: lineItemError } = await supabase
+    const { error: lineItemError } = await serviceClient
       .from("receipt_line_items")
       .insert({
         user_id: userData.user.id,
@@ -133,18 +131,15 @@ Deno.serve(async (request: Request) => {
       importedLineItemCount += 1;
     }
 
-    await supabase
-      .schema("private")
-      .from("gmail_imported_messages")
-      .insert({
-        user_id: userData.user.id,
-        gmail_message_id: message.id,
-        receipt_id: receiptID,
-      });
+    await serviceClient.rpc("insert_gmail_imported_message", {
+      p_user_id: userData.user.id,
+      p_gmail_message_id: message.id,
+      p_receipt_id: receiptID,
+    });
     importedReceiptCount += 1;
   }
 
-  await supabase
+  await serviceClient
     .from("source_connections")
     .upsert({
       user_id: userData.user.id,
@@ -210,15 +205,20 @@ async function getMessage(accessToken: string, messageID: string): Promise<Gmail
 }
 
 async function hasImportedMessage(supabase: ReturnType<typeof createClient>, userID: string, messageID: string): Promise<boolean> {
-  const { data } = await supabase
-    .schema("private")
-    .from("gmail_imported_messages")
-    .select("gmail_message_id")
-    .eq("user_id", userID)
-    .eq("gmail_message_id", messageID)
-    .maybeSingle();
+  const { data } = await supabase.rpc("has_gmail_imported_message", {
+    p_user_id: userID,
+    p_gmail_message_id: messageID,
+  });
 
   return Boolean(data);
+}
+
+function firstTokenRow(data: unknown): TokenRow | null {
+  if (Array.isArray(data)) {
+    return data[0] as TokenRow | undefined ?? null;
+  }
+
+  return data as TokenRow | null;
 }
 
 async function markConnectionFailed(supabase: ReturnType<typeof createClient>, userID: string, errorCode: string): Promise<void> {

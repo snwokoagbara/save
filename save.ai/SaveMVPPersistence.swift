@@ -175,13 +175,19 @@ struct GmailConnection: Equatable {
     let errorCode: String?
 }
 
+enum GmailOAuthConfiguration {
+    static let callbackScheme = "com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7"
+    static let callbackPath = "/gmail-oauth-callback"
+    static let redirectURI = URL(string: "\(callbackScheme):\(callbackPath)")!
+}
+
 struct GmailOAuthCallback: Equatable {
     let code: String
     let state: String
 
     init?(url: URL) {
-        guard url.scheme == "saveai",
-              url.host == "gmail-oauth-callback",
+        guard url.scheme == GmailOAuthConfiguration.callbackScheme,
+              url.path == GmailOAuthConfiguration.callbackPath,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let code = components.queryItems?.first(where: { $0.name == "code" })?.value,
               let state = components.queryItems?.first(where: { $0.name == "state" })?.value,
@@ -390,7 +396,7 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let data = try await httpClient.data(for: request)
-        let response = try JSONDecoder.saveMVP.decode(PasswordSignInResponse.self, from: data)
+        let response = try decodeAuthResponse(PasswordSignInResponse.self, from: data)
         let expiresAt = response.expiresIn.map { now().addingTimeInterval(TimeInterval($0)) }
 
         return SupabaseAuthSession(
@@ -414,7 +420,7 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let data = try await httpClient.data(for: request)
-        let response = try JSONDecoder.saveMVP.decode(PasswordSignUpResponse.self, from: data)
+        let response = try decodeAuthResponse(PasswordSignUpResponse.self, from: data)
         let userID = try response.resolvedUserID()
         let expiresAt = response.expiresIn.map { now().addingTimeInterval(TimeInterval($0)) }
         let session = response.accessToken.map {
@@ -450,7 +456,7 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let data = try await httpClient.data(for: request)
-        let response = try JSONDecoder.saveMVP.decode(PasswordSignInResponse.self, from: data)
+        let response = try decodeAuthResponse(PasswordSignInResponse.self, from: data)
         let expiresAt = response.expiresIn.map { now().addingTimeInterval(TimeInterval($0)) }
 
         return SupabaseAuthSession(
@@ -464,6 +470,17 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
     private struct PasswordSignInPayload: Encodable {
         let email: String
         let password: String
+    }
+
+    private func decodeAuthResponse<Response: Decodable>(_ type: Response.Type, from data: Data) throws -> Response {
+        do {
+            return try JSONDecoder.saveMVP.decode(type, from: data)
+        } catch {
+            if let authError = try? JSONDecoder.saveMVP.decode(AuthErrorResponse.self, from: data) {
+                throw authError.resolvedError
+            }
+            throw error
+        }
     }
 
     private struct RefreshTokenPayload: Encodable {
@@ -523,11 +540,40 @@ struct SupabaseRESTAuthClient: SupabaseAuthSigningIn {
             let id: UUID
         }
     }
+
+    private struct AuthErrorResponse: Decodable {
+        let code: String?
+        let message: String?
+        let error: String?
+        let errorDescription: String?
+
+        enum CodingKeys: String, CodingKey {
+            case code
+            case message
+            case error
+            case errorDescription = "error_description"
+        }
+
+        var resolvedError: SupabaseAuthError {
+            let normalizedCode = code?.lowercased()
+            let normalizedMessage = [message, errorDescription, error]
+                .compactMap { $0?.lowercased() }
+                .joined(separator: " ")
+
+            if normalizedCode == "email_not_confirmed" || normalizedMessage.contains("email not confirmed") {
+                return .emailNotConfirmed
+            }
+
+            return .serverMessage(message ?? errorDescription ?? error ?? "Authentication failed.")
+        }
+    }
 }
 
-enum SupabaseAuthError: Error {
+enum SupabaseAuthError: Error, Equatable {
     case invalidURL
     case missingUserID
+    case emailNotConfirmed
+    case serverMessage(String)
 }
 
 struct SaveMVPSignInController {
@@ -808,7 +854,7 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting, GmailDisc
         }
 
         let data = try await httpClient.data(for: request)
-        let response = try JSONDecoder.saveMVP.decode(ConnectionResponse.self, from: data)
+        let response = try decodeConnectionResponse(from: data)
         return response.connection
     }
 
@@ -826,7 +872,7 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting, GmailDisc
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let data = try await httpClient.data(for: request)
-        let response = try JSONDecoder.saveMVP.decode(ConnectionResponse.self, from: data)
+        let response = try decodeConnectionResponse(from: data)
         return response.connection
     }
 
@@ -931,6 +977,40 @@ struct SupabaseRESTGmailConnectionController: GmailConnectionStarting, GmailDisc
                 lastSyncedAt: lastSyncedAt,
                 errorCode: errorCode
             )
+        }
+    }
+
+    private func decodeConnectionResponse(from data: Data) throws -> ConnectionResponse {
+        do {
+            return try JSONDecoder.saveMVP.decode(ConnectionResponse.self, from: data)
+        } catch {
+            if let responseError = try? JSONDecoder.saveMVP.decode(EdgeFunctionErrorResponse.self, from: data) {
+                throw SupabaseAuthError.serverMessage(responseError.message)
+            }
+            throw error
+        }
+    }
+
+    private struct EdgeFunctionErrorResponse: Decodable {
+        let error: String?
+        let errorDescription: String?
+
+        enum CodingKeys: String, CodingKey {
+            case error
+            case errorDescription = "error_description"
+        }
+
+        var message: String {
+            switch (error, errorDescription) {
+            case let (error?, description?) where !description.isEmpty:
+                return "\(error): \(description)"
+            case let (error?, _):
+                return error
+            case let (_, description?):
+                return description
+            default:
+                return "Gmail request failed."
+            }
         }
     }
 }
@@ -1548,13 +1628,9 @@ private struct SupabaseFirstClassRows {
         var lineItemRowIDsByAppID: [UUID: UUID] = [:]
 
         receipts = state.receipts.map { receipt in
-            let receiptID = SupabaseDeterministicID.uuid(
-                for: "receipt|\(userID.uuidString)|\(receipt.merchant)|\(receipt.date.saveMVPDay)|\(receipt.source.rawValue)|\(receipt.total)"
-            )
-            receipt.lineItems.enumerated().forEach { index, item in
-                let lineItemID = SupabaseDeterministicID.uuid(
-                    for: "line-item|\(receiptID.uuidString)|\(index)|\(item.name)|\(item.amount)"
-                )
+            let receiptID = receipt.id
+            receipt.lineItems.forEach { item in
+                let lineItemID = item.id
                 lineItemRowIDsByAppID[item.id] = lineItemID
                 lineItemRows.append(
                     SupabaseReceiptLineItemRow(
@@ -1585,9 +1661,7 @@ private struct SupabaseFirstClassRows {
         var claimPacketItemRows: [SupabaseClaimPacketItemRow] = []
         claimPackets = state.claimPackets.map { packet in
             let template = ClaimAdministratorTemplateLibrary.template(for: packet.administratorName)
-            let claimPacketID = SupabaseDeterministicID.uuid(
-                for: "claim-packet|\(userID.uuidString)|\(packet.administratorName)|\(packet.submissionMode.rawValue)"
-            )
+            let claimPacketID = packet.id
             packet.lineItems.forEach { item in
                 guard let lineItemID = lineItemRowIDsByAppID[item.id] else {
                     return
@@ -2170,15 +2244,14 @@ enum GmailConnectionControllerFactory {
         session: SupabaseAuthSession
     ) -> GmailConnectionStarting? {
         guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
-              session.isUsable(),
-              let redirectURI = URL(string: "saveai://gmail-oauth-callback") else {
+              session.isUsable() else {
             return nil
         }
 
         return SupabaseRESTGmailConnectionController(
             configuration: configuration,
             session: session,
-            redirectURI: redirectURI
+            redirectURI: GmailOAuthConfiguration.redirectURI
         )
     }
 }
@@ -2200,21 +2273,37 @@ enum GmailReceiptImporterFactory {
     }
 }
 
+enum GmailConnectionLoaderFactory {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: SupabaseAuthSession
+    ) -> GmailConnectionLoading? {
+        guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
+              session.isUsable() else {
+            return nil
+        }
+
+        return SupabaseRESTGmailConnectionLoader(
+            configuration: configuration,
+            session: session
+        )
+    }
+}
+
 enum GmailDisconnectControllerFactory {
     static func make(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         session: SupabaseAuthSession
     ) -> GmailDisconnecting? {
         guard let configuration = SupabaseSaveMVPConfiguration(environment: environment),
-              session.isUsable(),
-              let redirectURI = URL(string: "saveai://gmail-oauth-callback") else {
+              session.isUsable() else {
             return nil
         }
 
         return SupabaseRESTGmailConnectionController(
             configuration: configuration,
             session: session,
-            redirectURI: redirectURI
+            redirectURI: GmailOAuthConfiguration.redirectURI
         )
     }
 }

@@ -24,6 +24,10 @@ struct MVPTask: Identifiable, Hashable {
     let amount: Double?
     let actionTitle: String
     let symbol: String
+
+    var startsGmailAuthorizationFlow: Bool {
+        id == "connect-gmail"
+    }
 }
 
 struct TaxReportArtifact: Codable, Hashable {
@@ -182,6 +186,15 @@ struct SaveMVPState {
         connectedSources.contains(.gmail)
     }
 
+    func isLiveConnected(_ source: ConnectedSource, gmailConnection: GmailConnection?) -> Bool {
+        switch source {
+        case .gmail:
+            return gmailConnection?.status == .connected
+        case .bank, .forwardingInbox:
+            return connectedSources.contains(source)
+        }
+    }
+
     var summary: ClaimSummary {
         ClaimSummary(receipts: receipts)
     }
@@ -263,6 +276,13 @@ struct SaveMVPState {
 
     mutating func completeOnboarding() {
         hasCompletedOnboarding = true
+    }
+
+    mutating func startDemoSources(hasAccountSession: Bool) {
+        completeOnboarding()
+        if !hasAccountSession {
+            connect(.gmail)
+        }
     }
 
     mutating func excludeFirstReviewItem() {

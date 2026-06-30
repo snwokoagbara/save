@@ -23,7 +23,7 @@
 			<string>save.ai.gmail-oauth</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>saveai</string>
+				<string>com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7</string>
 			</array>
 		</dict>
 	</array>

@@ -53,10 +53,11 @@ Deno.serve(async (request: Request) => {
     return jsonResponse({ error: "missing_oauth_callback_fields" }, 400);
   }
 
-  const supabase = createClient(supabaseURL, serviceRoleKey, {
+  const userClient = createClient(supabaseURL, serviceRoleKey, {
     global: { headers: { Authorization: authorization } },
   });
-  const { data: userData, error: userError } = await supabase.auth.getUser();
+  const serviceClient = createClient(supabaseURL, serviceRoleKey);
+  const { data: userData, error: userError } = await userClient.auth.getUser();
   if (userError || !userData.user) {
     return jsonResponse({ error: "invalid_user_session" }, 401);
   }
@@ -84,22 +85,20 @@ Deno.serve(async (request: Request) => {
 
   if (tokenResponse.refresh_token) {
     const encryptedRefreshToken = await encryptText(tokenResponse.refresh_token, tokenEncryptionKey);
-    const { error: tokenStoreError } = await supabase
-      .schema("private")
-      .from("gmail_oauth_tokens")
-      .upsert({
-        user_id: userData.user.id,
-        provider_subject: profile.emailAddress ?? null,
-        encrypted_refresh_token: encryptedRefreshToken,
-        access_token_expires_at: expiresAt,
-        scope: scopes,
-      }, { onConflict: "user_id" });
+    const { error: tokenStoreError } = await serviceClient.rpc("upsert_gmail_oauth_token", {
+      p_user_id: userData.user.id,
+      p_provider_subject: profile.emailAddress ?? null,
+      p_encrypted_refresh_token: encryptedRefreshToken,
+      p_access_token_expires_at: expiresAt,
+      p_scope: scopes,
+    });
     if (tokenStoreError) {
-      return jsonResponse({ error: "token_store_failed" }, 500);
+      console.error("token_store_failed", tokenStoreError);
+      return jsonResponse({ error: "token_store_failed", error_description: tokenStoreError.message }, 500);
     }
   }
 
-  const { error: connectionError } = await supabase
+  const { error: connectionError } = await serviceClient
     .from("source_connections")
     .upsert({
       user_id: userData.user.id,
@@ -116,7 +115,8 @@ Deno.serve(async (request: Request) => {
       error_code: null,
     }, { onConflict: "user_id,kind" });
   if (connectionError) {
-    return jsonResponse({ error: "connection_upsert_failed" }, 500);
+    console.error("connection_upsert_failed", connectionError);
+    return jsonResponse({ error: "connection_upsert_failed", error_description: connectionError.message }, 500);
   }
 
   return jsonResponse({

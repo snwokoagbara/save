@@ -18,25 +18,25 @@ Deno.serve(async (request: Request) => {
 
   const supabaseURL = requireEnv("SUPABASE_URL");
   const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-  const supabase = createClient(supabaseURL, serviceRoleKey, {
+  const userClient = createClient(supabaseURL, serviceRoleKey, {
     global: { headers: { Authorization: authorization } },
   });
+  const serviceClient = createClient(supabaseURL, serviceRoleKey);
 
-  const { data: userData, error: userError } = await supabase.auth.getUser();
+  const { data: userData, error: userError } = await userClient.auth.getUser();
   if (userError || !userData.user) {
     return jsonResponse({ error: "invalid_user_session" }, 401);
   }
 
-  const { error: tokenDeleteError } = await supabase
-    .schema("private")
-    .from("gmail_oauth_tokens")
-    .delete()
-    .eq("user_id", userData.user.id);
+  const { error: tokenDeleteError } = await serviceClient.rpc("delete_gmail_oauth_token", {
+    p_user_id: userData.user.id,
+  });
   if (tokenDeleteError) {
-    return jsonResponse({ error: "token_delete_failed" }, 500);
+    console.error("token_delete_failed", tokenDeleteError);
+    return jsonResponse({ error: "token_delete_failed", error_description: tokenDeleteError.message }, 500);
   }
 
-  const { error: connectionError } = await supabase
+  const { error: connectionError } = await serviceClient
     .from("source_connections")
     .upsert({
       user_id: userData.user.id,
@@ -50,7 +50,8 @@ Deno.serve(async (request: Request) => {
       error_code: null,
     }, { onConflict: "user_id,kind" });
   if (connectionError) {
-    return jsonResponse({ error: "connection_revoke_failed" }, 500);
+    console.error("connection_revoke_failed", connectionError);
+    return jsonResponse({ error: "connection_revoke_failed", error_description: connectionError.message }, 500);
   }
 
   return jsonResponse({

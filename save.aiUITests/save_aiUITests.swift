@@ -29,13 +29,42 @@ final class save_aiUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.staticTexts["Kai finds medical money you can claim back."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["savePrimaryButton"].exists)
         app.buttons["Start with demo sources"].tap()
 
         XCTAssertTrue(app.staticTexts["Kai is working"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["Ask Kai or drop a receipt"].exists)
+        XCTAssertTrue(app.otherElements["saveGlassCommandBar"].exists)
         XCTAssertTrue(app.staticTexts["Active tasks"].exists)
+        XCTAssertTrue(app.otherElements["saveTaskLedger"].exists)
         XCTAssertTrue(app.buttons["Review item"].exists)
         XCTAssertTrue(app.buttons["Prepare claim"].exists)
+    }
+
+    @MainActor
+    func testWorkflowSheetsUseSharedLightDesignSystem() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["RESET_SAVE_MVP_PROGRESS"]
+        app.launch()
+        app.buttons["Start with demo sources"].tap()
+
+        app.buttons["Add receipt"].tap()
+        XCTAssertTrue(app.otherElements["saveReceiptIntakeSheet"].waitForExistence(timeout: 3))
+
+        app.terminate()
+        app.launchArguments = []
+        app.launch()
+
+        app.swipeUp()
+        app.buttons["Review item"].tap()
+        XCTAssertTrue(app.otherElements["saveReceiptReviewSheet"].waitForExistence(timeout: 3))
+
+        app.terminate()
+        app.launch()
+
+        app.swipeUp()
+        app.buttons["Prepare claim"].tap()
+        XCTAssertTrue(app.otherElements["saveClaimPacketSheet"].waitForExistence(timeout: 3))
     }
 
     @MainActor

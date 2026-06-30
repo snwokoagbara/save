@@ -94,6 +94,12 @@ struct save_aiTests {
         #expect(!state.activeTasks.map(\.title).contains("Link bank"))
     }
 
+    @Test func mvpConnectGmailTaskRequiresLiveAuthorizationFlow() async throws {
+        let task = try #require(SaveMVPState().activeTasks.first(where: { $0.id == "connect-gmail" }))
+
+        #expect(task.startsGmailAuthorizationFlow)
+    }
+
     @Test func mvpConnectsGmailForFirstAutomaticEstimate() async throws {
         var state = SaveMVPState()
 
@@ -112,6 +118,53 @@ struct save_aiTests {
 
         #expect(!state.isReadyForEstimate)
         #expect(state.activeTasks.map(\.title).contains("Connect Gmail"))
+    }
+
+    @Test func mvpRequiresAccountSessionForLiveGmailConnection() async throws {
+        var state = SaveMVPState()
+
+        state.connect(.gmail)
+
+        #expect(!state.isLiveConnected(.gmail, gmailConnection: nil))
+        #expect(!state.isLiveConnected(.gmail, gmailConnection: GmailConnection(
+            status: .revoked,
+            accountLabel: nil,
+            lastSyncedAt: nil,
+            errorCode: nil
+        )))
+        #expect(state.isLiveConnected(.gmail, gmailConnection: GmailConnection(
+            status: .connected,
+            accountLabel: "kai@example.com",
+            lastSyncedAt: nil,
+            errorCode: nil
+        )))
+
+        state.disconnect(.gmail)
+
+        #expect(state.isLiveConnected(.gmail, gmailConnection: GmailConnection(
+            status: .connected,
+            accountLabel: "kai@example.com",
+            lastSyncedAt: nil,
+            errorCode: nil
+        )))
+    }
+
+    @Test func mvpDemoOnboardingDoesNotConnectGmailForSignedInAccount() async throws {
+        var state = SaveMVPState()
+
+        state.startDemoSources(hasAccountSession: true)
+
+        #expect(state.hasCompletedOnboarding)
+        #expect(!state.connectedSources.contains(.gmail))
+    }
+
+    @Test func mvpDemoOnboardingKeepsLocalDemoGmailWhenSignedOut() async throws {
+        var state = SaveMVPState()
+
+        state.startDemoSources(hasAccountSession: false)
+
+        #expect(state.hasCompletedOnboarding)
+        #expect(state.connectedSources.contains(.gmail))
     }
 
     @Test func mvpReviewActionExcludesUncertainLineItem() async throws {
@@ -362,7 +415,7 @@ struct save_aiTests {
                 refreshToken: "refresh-token",
                 expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
             ),
-            redirectURI: URL(string: "saveai://gmail-oauth-callback")!,
+            redirectURI: GmailOAuthConfiguration.redirectURI,
             httpClient: client
         )
 
@@ -376,7 +429,7 @@ struct save_aiTests {
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         let body = try #require(request.httpBody)
         let json = try #require(String(data: body, encoding: .utf8))
-        #expect(json.contains("\"redirect_uri\":\"saveai:\\/\\/gmail-oauth-callback\""))
+        #expect(json.contains("\"redirect_uri\":\"com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7:\\/gmail-oauth-callback\""))
         #expect(start == GmailAuthorizationStart(
             authorizationURL: URL(string: "https://accounts.google.com/o/oauth2/v2/auth?state=gmail-state")!,
             state: "gmail-state",
@@ -406,7 +459,7 @@ struct save_aiTests {
                 refreshToken: "refresh-token",
                 expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
             ),
-            redirectURI: URL(string: "saveai://gmail-oauth-callback")!,
+            redirectURI: GmailOAuthConfiguration.redirectURI,
             httpClient: client
         )
 
@@ -427,13 +480,51 @@ struct save_aiTests {
         #expect(json.contains("\"code\":\"google-auth-code\""))
         #expect(json.contains("\"state\":\"gmail-state\""))
         #expect(json.contains("\"code_verifier\":\"gmail-code-verifier\""))
-        #expect(json.contains("\"redirect_uri\":\"saveai:\\/\\/gmail-oauth-callback\""))
+        #expect(json.contains("\"redirect_uri\":\"com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7:\\/gmail-oauth-callback\""))
         #expect(connection == GmailConnection(
             status: .connected,
             accountLabel: "kai@example.com",
             lastSyncedAt: Date(timeIntervalSince1970: 1_781_676_000),
             errorCode: nil
         ))
+    }
+
+    @Test func supabaseGmailConnectionControllerMapsCallbackErrorResponse() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "error": "invalid_client",
+              "error_description": "Unauthorized"
+            }
+            """.data(using: .utf8)!
+        )
+        let controller = SupabaseRESTGmailConnectionController(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            redirectURI: GmailOAuthConfiguration.redirectURI,
+            httpClient: client
+        )
+
+        do {
+            _ = try await controller.completeAuthorization(
+                code: "google-auth-code",
+                state: "gmail-state",
+                codeVerifier: "gmail-code-verifier"
+            )
+            Issue.record("Expected callback error")
+        } catch SupabaseAuthError.serverMessage(let message) {
+            #expect(message == "invalid_client: Unauthorized")
+        } catch {
+            Issue.record("Expected server message, got \(error)")
+        }
     }
 
     @Test func supabaseGmailConnectionControllerBuildsAuthenticatedDisconnectRequest() async throws {
@@ -458,7 +549,7 @@ struct save_aiTests {
                 refreshToken: "refresh-token",
                 expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
             ),
-            redirectURI: URL(string: "saveai://gmail-oauth-callback")!,
+            redirectURI: GmailOAuthConfiguration.redirectURI,
             httpClient: client
         )
 
@@ -479,12 +570,12 @@ struct save_aiTests {
     }
 
     @Test func gmailOAuthCallbackParsesOnlyExpectedDeepLink() async throws {
-        let callback = try #require(GmailOAuthCallback(url: URL(string: "saveai://gmail-oauth-callback?code=google-auth-code&state=gmail-state")!))
+        let callback = try #require(GmailOAuthCallback(url: URL(string: "com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7:/gmail-oauth-callback?code=google-auth-code&state=gmail-state")!))
 
         #expect(callback.code == "google-auth-code")
         #expect(callback.state == "gmail-state")
-        #expect(GmailOAuthCallback(url: URL(string: "saveai://other?code=google-auth-code&state=gmail-state")!) == nil)
-        #expect(GmailOAuthCallback(url: URL(string: "saveai://gmail-oauth-callback?state=gmail-state")!) == nil)
+        #expect(GmailOAuthCallback(url: URL(string: "com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7:/other?code=google-auth-code&state=gmail-state")!) == nil)
+        #expect(GmailOAuthCallback(url: URL(string: "com.googleusercontent.apps.758928369873-7bir7mgag90dqs6u4337kd4qjq3leda7:/gmail-oauth-callback?state=gmail-state")!) == nil)
     }
 
     @Test func supabaseGmailReceiptImporterBuildsAuthenticatedImportRequest() async throws {
@@ -904,6 +995,65 @@ struct save_aiTests {
         #expect(claimPacketBody.contains("\"submission_method\":\"administrator_portal\""))
         #expect(claimPacketBody.contains("\"submission_confirmation_number\":\"HE-12345\""))
         #expect(claimPacketBody.contains("\"submission_note\":\"Uploaded through HealthEquity portal.\""))
+    }
+
+    @Test func supabaseFirstClassProgressSyncerPreservesFullDomainReceiptIDs() async throws {
+        let client = CapturingSupabaseHTTPClient()
+        let syncer = SupabaseRESTSaveMVPFirstClassProgressSyncer(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            session: SupabaseAuthSession(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                accessToken: "user-access-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
+            ),
+            httpClient: client
+        )
+        let receiptID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
+        let lineItemID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        let receipt = Receipt(
+            id: receiptID,
+            merchant: "Lorca Coffee Bar",
+            date: DemoData.date(year: 2026, month: 6, day: 27),
+            source: .gmail,
+            lineItems: [
+                ReceiptLineItem(
+                    id: lineItemID,
+                    name: "Email receipt review",
+                    amount: 16.10,
+                    eligibility: .needsReview,
+                    confidence: 0.35
+                )
+            ]
+        )
+        let state = SaveMVPPersistedState(
+            hasCompletedOnboarding: true,
+            connectedSources: [.gmail],
+            receipts: [receipt],
+            claimPackets: []
+        )
+
+        syncer.push(
+            SupabaseSaveMVPProgressRecord(
+                userID: UUID(uuidString: "00000000-0000-0000-0000-000000000789")!,
+                state: state,
+                updatedAt: Date(timeIntervalSince1970: 1_800_000_002)
+            )
+        ) { _ in }
+
+        let receiptRequest = try #require(client.requests.first { $0.url?.lastPathComponent == "receipts" })
+        let receiptData = try #require(receiptRequest.httpBody)
+        let receiptBody = try #require(String(data: receiptData, encoding: .utf8))
+        #expect(receiptBody.contains("\"id\":\"\(receiptID.uuidString.lowercased())\""))
+
+        let lineItemRequest = try #require(client.requests.first { $0.url?.lastPathComponent == "receipt_line_items" })
+        let lineItemData = try #require(lineItemRequest.httpBody)
+        let lineItemBody = try #require(String(data: lineItemData, encoding: .utf8))
+        #expect(lineItemBody.contains("\"id\":\"\(lineItemID.uuidString.lowercased())\""))
+        #expect(lineItemBody.contains("\"receipt_id\":\"\(receiptID.uuidString.lowercased())\""))
     }
 
     @Test func supabaseFirstClassProgressSyncerBuildsClaimPacketItemRows() async throws {
@@ -1355,6 +1505,32 @@ struct save_aiTests {
             refreshToken: "new-refresh-token",
             expiresAt: Date(timeIntervalSince1970: 1_800_003_600)
         ))
+    }
+
+    @Test func supabasePasswordAuthClientMapsUnconfirmedEmailError() async throws {
+        let client = CapturingSupabaseAuthHTTPClient(
+            responseData: """
+            {
+              "code": "email_not_confirmed",
+              "message": "Email not confirmed"
+            }
+            """.data(using: .utf8)!
+        )
+        let authClient = SupabaseRESTAuthClient(
+            configuration: SupabaseSaveMVPConfiguration(
+                projectURL: URL(string: "https://example.supabase.co")!,
+                publishableKey: "publishable-key"
+            ),
+            httpClient: client
+        )
+
+        do {
+            _ = try await authClient.signIn(email: "kai@example.com", password: "correct-password")
+            Issue.record("Expected unconfirmed email error")
+        } catch SupabaseAuthError.emailNotConfirmed {
+        } catch {
+            Issue.record("Expected unconfirmed email error, got \(error)")
+        }
     }
 
     @Test func supabasePasswordAuthClientBuildsSignupRequestAndDecodesPendingUser() async throws {

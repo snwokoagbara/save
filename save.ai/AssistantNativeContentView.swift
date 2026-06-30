@@ -11,6 +11,7 @@ struct AssistantNativeContentView: View {
     private let gmailReceiptImporterFactory: (SupabaseAuthSession) -> GmailReceiptImporting?
     private let gmailDisconnectControllerFactory: (SupabaseAuthSession) -> GmailDisconnecting?
     private let gmailConfigurationCheckerFactory: (SupabaseAuthSession) -> GmailConfigurationChecking?
+    private let gmailConnectionLoaderFactory: (SupabaseAuthSession) -> GmailConnectionLoading?
     private let signInController: SaveMVPSignInController?
     @State private var progressStore: SaveMVPProgressStoring
     @State private var state: SaveMVPState
@@ -20,6 +21,7 @@ struct AssistantNativeContentView: View {
     @State private var isConnectingGmail = false
     @State private var isImportingGmail = false
     @State private var isDisconnectingGmail = false
+    @State private var liveGmailConnection: GmailConnection?
     @State private var gmailLastScannedAt: Date?
     @State private var authSession: SupabaseAuthSession?
     @State private var remoteSyncStatus: SaveMVPRemoteSyncStatus?
@@ -40,6 +42,7 @@ struct AssistantNativeContentView: View {
         gmailReceiptImporterFactory: @escaping (SupabaseAuthSession) -> GmailReceiptImporting? = { _ in nil },
         gmailDisconnectControllerFactory: @escaping (SupabaseAuthSession) -> GmailDisconnecting? = { _ in nil },
         gmailConfigurationCheckerFactory: @escaping (SupabaseAuthSession) -> GmailConfigurationChecking? = { _ in nil },
+        gmailConnectionLoaderFactory: @escaping (SupabaseAuthSession) -> GmailConnectionLoading? = { _ in nil },
         signInController: SaveMVPSignInController? = nil,
         authSession: SupabaseAuthSession? = nil
     ) {
@@ -50,6 +53,7 @@ struct AssistantNativeContentView: View {
         self.gmailReceiptImporterFactory = gmailReceiptImporterFactory
         self.gmailDisconnectControllerFactory = gmailDisconnectControllerFactory
         self.gmailConfigurationCheckerFactory = gmailConfigurationCheckerFactory
+        self.gmailConnectionLoaderFactory = gmailConnectionLoaderFactory
         self.signInController = signInController
         if ProcessInfo.processInfo.arguments.contains("RESET_SAVE_MVP_PROGRESS") {
             progressStore.save(SaveMVPPersistedState())
@@ -111,6 +115,12 @@ struct AssistantNativeContentView: View {
                     session: session
                 )
             },
+            gmailConnectionLoaderFactory: { session in
+                GmailConnectionLoaderFactory.make(
+                    environment: environment,
+                    session: session
+                )
+            },
             signInController: SaveMVPSignInControllerFactory.make(
                 environment: environment,
                 sessionStore: sessionStore
@@ -140,8 +150,7 @@ struct AssistantNativeContentView: View {
                         },
                         startDemo: {
                             updateState {
-                                $0.completeOnboarding()
-                                $0.connect(.gmail)
+                                $0.startDemoSources(hasAccountSession: authSession != nil)
                             }
                         },
                         startReceiptOnly: {
@@ -152,7 +161,8 @@ struct AssistantNativeContentView: View {
                     )
                 }
             }
-            .background(AssistantTheme.background)
+            .background(SAVETheme.canvas)
+            .tint(SAVETheme.accent)
             .navigationTitle("SAVE")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -193,6 +203,7 @@ struct AssistantNativeContentView: View {
                 }
             }
         }
+        .preferredColorScheme(.light)
         .sheet(isPresented: $isShowingSignIn) {
             if let signInController {
                 SupabaseSignInSheet(controller: signInController) { session in
@@ -204,6 +215,7 @@ struct AssistantNativeContentView: View {
         .task(id: authSession?.userID) {
             await restoreRemoteProgressIfAvailable()
             await loadAdministratorTemplatesIfAvailable()
+            await loadGmailConnectionIfAvailable()
         }
         .onAppear {
             configureProgressStore()
@@ -222,12 +234,16 @@ struct AssistantNativeContentView: View {
         }
     }
 
+    private var isGmailLive: Bool {
+        state.isLiveConnected(.gmail, gmailConnection: liveGmailConnection)
+    }
+
     private var kaiHome: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                AssistantHero(state: state) { source in
+            LazyVStack(alignment: .leading, spacing: 22) {
+                AssistantHero(state: state, isGmailLive: isGmailLive) { source in
                     if source == .gmail {
-                        if state.connectedSources.contains(.gmail) {
+                        if isGmailLive {
                             importGmailReceipts()
                         } else {
                             startGmailConnection()
@@ -245,7 +261,7 @@ struct AssistantNativeContentView: View {
                         .padding(.horizontal, 4)
                 }
                 GmailPrivacyView(
-                    isConnected: state.connectedSources.contains(.gmail),
+                    isConnected: isGmailLive,
                     lastScannedAt: gmailLastScannedAt,
                     isDisconnecting: isDisconnectingGmail,
                     disconnect: {
@@ -270,7 +286,9 @@ struct AssistantNativeContentView: View {
                     isShowingReceiptIntake = true
                 }
                 ActiveTasksView(tasks: state.activeTasks) { task in
-                    if task.id.hasPrefix("review-receipt-"), let receipt = state.firstNeedsReviewReceipt {
+                    if task.startsGmailAuthorizationFlow {
+                        startGmailConnection()
+                    } else if task.id.hasPrefix("review-receipt-"), let receipt = state.firstNeedsReviewReceipt {
                         receiptReviewRoute = ReceiptReviewRoute(receiptID: receipt.id)
                     } else if task.id == "prepare-health-equity" {
                         updateState {
@@ -303,8 +321,11 @@ struct AssistantNativeContentView: View {
                 }
             }
             .padding(.horizontal, 18)
-            .padding(.vertical, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 36)
         }
+        .scrollIndicators(.hidden)
+        .background(SAVETheme.canvas)
         .sheet(isPresented: $isShowingReceiptIntake) {
             ReceiptIntakeSheet(
                 importSampleReceipt: {
@@ -370,6 +391,7 @@ struct AssistantNativeContentView: View {
 
     private func handleSignedIn(_ session: SupabaseAuthSession) {
         authSession = session
+        liveGmailConnection = nil
         configureProgressStore()
         hasAttemptedRemoteProgressLoad = false
         isShowingSignIn = false
@@ -378,6 +400,7 @@ struct AssistantNativeContentView: View {
     private func signOut() {
         signInController?.signOut()
         authSession = nil
+        liveGmailConnection = nil
         administratorTemplates = ClaimAdministratorTemplateLibrary.defaultTemplates
         remoteSyncStatus = nil
         hasAttemptedRemoteProgressLoad = false
@@ -472,11 +495,15 @@ struct AssistantNativeContentView: View {
                         $0.connect(.gmail)
                     }
                 }
+                await loadGmailConnectionIfAvailable()
             } catch {
                 await MainActor.run {
                     self.pendingGmailAuthorizationStart = nil
                     isConnectingGmail = false
-                    gmailConnectionError = "Gmail connection could not finish. Check OAuth secrets and try again."
+                    gmailConnectionError = gmailErrorMessage(
+                        for: error,
+                        fallback: "Gmail connection could not finish. Check OAuth secrets and try again."
+                    )
                 }
             }
         }
@@ -514,11 +541,15 @@ struct AssistantNativeContentView: View {
                         : "Gmail scan imported \(result.importedReceiptCount) likely medical receipt(s)."
                     hasAttemptedRemoteProgressLoad = false
                 }
+                await loadGmailConnectionIfAvailable()
                 await restoreRemoteProgressIfAvailable()
             } catch {
                 await MainActor.run {
                     isImportingGmail = false
-                    gmailConnectionError = "Gmail scan could not run. Check Gmail OAuth secrets and connection status."
+                    gmailConnectionError = gmailErrorMessage(
+                        for: error,
+                        fallback: "Gmail scan could not run. Check Gmail OAuth secrets and connection status."
+                    )
                 }
             }
         }
@@ -548,6 +579,7 @@ struct AssistantNativeContentView: View {
                 await MainActor.run {
                     isDisconnectingGmail = false
                     gmailLastScannedAt = nil
+                    liveGmailConnection = nil
                     updateState {
                         $0.disconnect(.gmail)
                     }
@@ -556,10 +588,22 @@ struct AssistantNativeContentView: View {
             } catch {
                 await MainActor.run {
                     isDisconnectingGmail = false
-                    gmailConnectionError = "Gmail could not be disconnected. Check connection and try again."
+                    gmailConnectionError = gmailErrorMessage(
+                        for: error,
+                        fallback: "Gmail could not be disconnected. Check connection and try again."
+                    )
                 }
             }
         }
+    }
+
+    private func gmailErrorMessage(for error: Error, fallback: String) -> String {
+        if let authError = error as? SupabaseAuthError,
+           case .serverMessage(let message) = authError {
+            return "Gmail error: \(message)"
+        }
+
+        return fallback
     }
 
     private func gmailConfigurationErrorMessage(_ status: GmailConfigurationStatus) -> String {
@@ -624,6 +668,39 @@ struct AssistantNativeContentView: View {
             }
         } catch {
             administratorTemplates = ClaimAdministratorTemplateLibrary.defaultTemplates
+        }
+    }
+
+    private func loadGmailConnectionIfAvailable() async {
+        guard let authSession,
+              let loader = gmailConnectionLoaderFactory(authSession) else {
+            liveGmailConnection = nil
+            return
+        }
+
+        do {
+            let connection = try await loader.load()
+            await MainActor.run {
+                liveGmailConnection = connection?.status == .connected ? connection : nil
+                if connection?.status == .connected {
+                    updateState {
+                        $0.connect(.gmail)
+                    }
+                } else if state.connectedSources.contains(.gmail) {
+                    updateState {
+                        $0.disconnect(.gmail)
+                    }
+                }
+            }
+        } catch {
+            await MainActor.run {
+                liveGmailConnection = nil
+                if state.connectedSources.contains(.gmail) {
+                    updateState {
+                        $0.disconnect(.gmail)
+                    }
+                }
+            }
         }
     }
 
@@ -708,6 +785,7 @@ private struct SupabaseSignInSheet: View {
                     }
                 }
             }
+            .saveDocumentBackground()
             .navigationTitle(isCreatingAccount ? "Create account" : "Sign in")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -762,12 +840,27 @@ private struct SupabaseSignInSheet: View {
             } catch {
                 await MainActor.run {
                     isSigningIn = false
-                    errorMessage = isCreatingAccount
-                        ? "Account creation failed. Check the email and password."
-                        : "Sign in failed. Check the email and password."
+                    errorMessage = authErrorMessage(for: error, isCreatingAccount: isCreatingAccount)
                 }
             }
         }
+    }
+
+    private func authErrorMessage(for error: Error, isCreatingAccount: Bool) -> String {
+        if let authError = error as? SupabaseAuthError {
+            switch authError {
+            case .emailNotConfirmed:
+                return "Confirm your email first, then sign in."
+            case .serverMessage(let message):
+                return message
+            case .invalidURL, .missingUserID:
+                break
+            }
+        }
+
+        return isCreatingAccount
+            ? "Account creation failed. Check the email and password."
+            : "Sign in failed. Check the email and password."
     }
 }
 
@@ -782,25 +875,19 @@ private struct OnboardingView: View {
     let startReceiptOnly: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Spacer(minLength: 18)
+        VStack(alignment: .leading, spacing: 24) {
+            Spacer(minLength: 12)
 
-            ZStack {
-                Circle()
-                    .fill(.teal.gradient)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 72, height: 72)
+            SAVEIconBadge(symbol: "sparkles", size: 64)
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("Kai finds medical money you can claim back.")
                     .font(.largeTitle.weight(.bold))
+                    .foregroundStyle(SAVETheme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Start with demo Gmail discovery, or continue with receipt upload only. Live Gmail comes into V1; Plaid moves to V2.")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SAVETheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -824,19 +911,18 @@ private struct OnboardingView: View {
             VStack(spacing: 10) {
                 Button(action: startDemo) {
                     Text("Start with demo sources")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.teal)
+                .buttonStyle(SAVEPrimaryButtonStyle())
+                .accessibilityIdentifier("savePrimaryButton")
 
                 Button(action: startReceiptOnly) {
                     Text("Continue receipt-only")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(SAVESecondaryButtonStyle())
             }
         }
         .padding(22)
+        .background(SAVETheme.canvas)
     }
 }
 
@@ -847,17 +933,15 @@ private struct OnboardingPoint: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol)
-                .foregroundStyle(.teal)
-                .frame(width: 32, height: 32)
-                .background(.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            SAVEIconBadge(symbol: symbol, size: 34)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(SAVETheme.ink)
                 Text(detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SAVETheme.muted)
             }
         }
     }
@@ -865,55 +949,50 @@ private struct OnboardingPoint: View {
 
 private struct AssistantHero: View {
     let state: SaveMVPState
+    let isGmailLive: Bool
     let connect: (ConnectedSource) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(.teal.gradient)
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 58, height: 58)
+                SAVEIconBadge(symbol: "sparkles", size: 52)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Kai is working")
                         .font(.title2.weight(.bold))
+                        .foregroundStyle(SAVETheme.ink)
                     Text("Scanning receipts, finding email evidence, and preparing claims.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SAVETheme.muted)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Recoverable now")
+                Text("Likely claimable")
                     .font(.caption.weight(.semibold))
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SAVETheme.muted)
                 Text(state.summary.totalClaimable.currency)
                     .font(.system(size: 54, weight: .bold, design: .rounded))
+                    .foregroundStyle(SAVETheme.ink)
                     .minimumScaleFactor(0.65)
                 Text(statusLine)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SAVETheme.muted)
             }
 
             HStack(spacing: 10) {
                 AssistantSourceButton(
                     title: "Gmail scan",
-                    state: state.connectedSources.contains(.gmail) ? "live" : "off",
+                    state: isGmailLive ? "live" : "off",
                     symbol: "envelope.fill",
-                    isConnected: state.connectedSources.contains(.gmail)
+                    isConnected: isGmailLive
                 ) {
                     connect(.gmail)
                 }
             }
         }
-        .padding(20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .saveSolidSurface(cornerRadius: SAVETheme.largeSurfaceRadius, padding: 20)
     }
 
     private var statusLine: String {
@@ -934,18 +1013,15 @@ private struct GmailPrivacyView: View {
     var body: some View {
         if isConnected {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.headline)
-                    .foregroundStyle(.teal)
-                    .frame(width: 34, height: 34)
-                    .background(.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                SAVEIconBadge(symbol: "lock.shield.fill", size: 34)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Gmail receipt scan")
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(SAVETheme.ink)
                     Text(detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SAVETheme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -954,12 +1030,10 @@ private struct GmailPrivacyView: View {
                 Button(isDisconnecting ? "Disconnecting" : "Disconnect") {
                     disconnect()
                 }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
+                .buttonStyle(SAVECompactButtonStyle(tint: SAVETheme.muted))
                 .disabled(isDisconnecting)
             }
-            .padding(14)
-            .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .saveSolidSurface(padding: 14)
         }
     }
 
@@ -983,18 +1057,15 @@ private struct AccountStatusView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .font(.headline)
-                .foregroundStyle(iconColor)
-                .frame(width: 34, height: 34)
-                .background(iconColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            SAVEIconBadge(symbol: iconName, tint: iconColor, size: 34)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(SAVETheme.ink)
                 Text(detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SAVETheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1005,28 +1076,24 @@ private struct AccountStatusView: View {
                     Button("Sign in") {
                         showSignIn()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.teal)
+                    .buttonStyle(SAVECompactButtonStyle(tint: SAVETheme.accent))
                 } else {
                     VStack(spacing: 8) {
                         Button("Sync now") {
                             syncNow()
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.teal)
+                        .buttonStyle(SAVECompactButtonStyle(tint: SAVETheme.accent))
                         .disabled(isSyncing)
 
                         Button("Sign out") {
                             signOut()
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.secondary)
+                        .buttonStyle(SAVECompactButtonStyle(tint: SAVETheme.muted))
                     }
                 }
             }
         }
-        .padding(14)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .saveSolidSurface(padding: 14)
     }
 
     private var iconColor: Color {
@@ -1035,10 +1102,10 @@ private struct AccountStatusView: View {
         }
 
         if case .failed = remoteSyncStatus {
-            return .orange
+            return SAVETheme.warning
         }
 
-        return .teal
+        return SAVETheme.accent
     }
 
     private var iconName: String {
@@ -1123,23 +1190,27 @@ private struct AssistantPromptBar: View {
     var body: some View {
         HStack(spacing: 12) {
             Button(action: addReceipt) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.teal)
+                Image(systemName: "plus")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(SAVETheme.accent, in: Circle())
             }
             .accessibilityLabel("Add receipt")
 
             Text("Ask Kai or drop a receipt")
                 .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SAVETheme.muted)
 
             Spacer()
 
             Image(systemName: "mic.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SAVETheme.muted)
         }
-        .padding(16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(12)
+        .saveGlassSurface(cornerRadius: SAVETheme.surfaceRadius, interactive: true)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("saveGlassCommandBar")
     }
 }
 
@@ -1194,7 +1265,7 @@ private struct ReceiptIntakeSheet: View {
                 if isProcessing {
                     Label("Kai is reading the receipt", systemImage: "text.viewfinder")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.teal)
+                        .foregroundStyle(SAVETheme.accent)
                         .padding(.top, 4)
                 }
 
@@ -1208,6 +1279,7 @@ private struct ReceiptIntakeSheet: View {
                 Spacer()
             }
             .padding(18)
+            .background(SAVETheme.canvas)
             .navigationTitle("Add receipt")
             .navigationBarTitleDisplayMode(.inline)
             .onChange(of: selectedPhotoItem) { _, item in
@@ -1233,6 +1305,8 @@ private struct ReceiptIntakeSheet: View {
                 )
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("saveReceiptIntakeSheet")
     }
 
     private func importPhotoItem(_ item: PhotosPickerItem) async {
@@ -1294,24 +1368,24 @@ private struct ReceiptIntakeOptionContent: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.headline)
-                .foregroundStyle(isEnabled ? .teal : .secondary)
-                .frame(width: 38, height: 38)
-                .background((isEnabled ? Color.teal : Color.secondary).opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            SAVEIconBadge(
+                symbol: symbol,
+                tint: isEnabled ? SAVETheme.accent : SAVETheme.muted,
+                size: 38
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(SAVETheme.ink)
                 Text(detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SAVETheme.muted)
             }
 
             Spacer()
         }
-        .padding(14)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .saveSolidSurface(padding: 14)
     }
 }
 
@@ -1321,8 +1395,7 @@ private struct ActiveTasksView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Active tasks")
-                .font(.headline)
+            SAVESectionTitle(title: "Active tasks")
 
             if tasks.isEmpty {
                 AssistantDoneCard()
@@ -1334,18 +1407,20 @@ private struct ActiveTasksView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("saveTaskLedger")
     }
 
     private func tint(for task: MVPTask) -> Color {
         switch task.id {
         case "connect-gmail", "link-bank", "prepare-health-equity":
-            return .teal
+            return SAVETheme.accent
         case let taskID where taskID.hasPrefix("review-receipt-"):
-            return .orange
+            return SAVETheme.warning
         case "export-tax-report":
-            return .blue
+            return SAVETheme.accent
         default:
-            return .teal
+            return SAVETheme.accent
         }
     }
 }
@@ -1358,18 +1433,15 @@ private struct AssistantTaskCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: task.symbol)
-                    .font(.headline)
-                    .foregroundStyle(tint)
-                    .frame(width: 34, height: 34)
-                    .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                SAVEIconBadge(symbol: task.symbol, tint: tint, size: 36)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(task.title)
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(SAVETheme.ink)
                     Text(task.detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SAVETheme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -1384,13 +1456,10 @@ private struct AssistantTaskCard: View {
 
             Button(action: perform) {
                 Text(task.actionTitle)
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(tint)
+            .buttonStyle(SAVEPrimaryButtonStyle())
         }
-        .padding(14)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .saveSolidSurface(padding: 14)
     }
 }
 
@@ -1398,10 +1467,9 @@ private struct AssistantDoneCard: View {
     var body: some View {
         Label("Kai has no open tasks", systemImage: "checkmark.seal.fill")
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.teal)
+            .foregroundStyle(SAVETheme.success)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .saveSolidSurface(padding: 14)
     }
 }
 
@@ -1413,56 +1481,62 @@ private struct AssistantEvidenceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Kai's evidence")
-                .font(.headline)
+            SAVESectionTitle(title: "Evidence")
 
-            HStack(spacing: 12) {
-                AssistantMetricCard(value: "\(receipts.count)", label: "receipts reviewed", symbol: "receipt.fill")
-                AssistantMetricCard(value: "\(taxExport.csvRows.count)", label: "tax rows ready", symbol: "doc.text.fill")
-            }
-
-            if let taxReportArtifact {
-                Label(
-                    "\(taxReportArtifact.filename) exported",
-                    systemImage: "square.and.arrow.down.fill"
-                )
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.blue)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.blue.opacity(0.11), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-
-            ForEach(receipts.prefix(2)) { receipt in
-                Button {
-                    reviewReceipt(receipt)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: receipt.source == .bank ? "building.columns.fill" : "receipt.fill")
-                            .foregroundStyle(.teal)
-                            .frame(width: 34, height: 34)
-                            .background(.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(receipt.merchant)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            Text("\(receipt.source.rawValue) matched \(receipt.lineItems.count) line items")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Text(receipt.reimbursableTotal.currency)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.teal)
-                    }
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    AssistantMetricCard(value: "\(receipts.count)", label: "receipts", symbol: "receipt.fill")
+                    Rectangle().fill(SAVETheme.hairline).frame(width: 0.5, height: 46)
+                    AssistantMetricCard(value: "\(taxExport.csvRows.count)", label: "tax rows", symbol: "doc.text.fill")
                 }
-                .buttonStyle(.plain)
-                .padding(12)
-                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                if let taxReportArtifact {
+                    SAVELedgerDivider()
+                    Label(
+                        "\(taxReportArtifact.filename) exported",
+                        systemImage: "square.and.arrow.down.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(SAVETheme.accent)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                ForEach(receipts.prefix(2)) { receipt in
+                    SAVELedgerDivider()
+                    Button {
+                        reviewReceipt(receipt)
+                    } label: {
+                        HStack(spacing: 12) {
+                            SAVEIconBadge(
+                                symbol: receipt.source == .bank ? "building.columns.fill" : "receipt.fill",
+                                size: 34
+                            )
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(receipt.merchant)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(SAVETheme.ink)
+                                Text("\(receipt.source.rawValue) matched \(receipt.lineItems.count) line items")
+                                    .font(.caption)
+                                    .foregroundStyle(SAVETheme.muted)
+                            }
+
+                            Spacer()
+
+                            Text(receipt.reimbursableTotal.currency)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(SAVETheme.ink)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(SAVETheme.muted)
+                        }
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .saveSolidSurface(padding: 14)
         }
     }
 }
@@ -1502,6 +1576,7 @@ private struct ReceiptReviewSheet: View {
                     }
                 }
             }
+            .saveDocumentBackground()
             .navigationTitle("Review receipt")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1513,6 +1588,8 @@ private struct ReceiptReviewSheet: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("saveReceiptReviewSheet")
         .sheet(isPresented: $isEditingReceipt) {
             ReceiptEditSheet(receipt: receipt) { merchant, date in
                 editReceipt(receipt, merchant, date)
@@ -1560,6 +1637,7 @@ private struct ReceiptEditSheet: View {
                     DatePicker("Date", selection: $date, displayedComponents: .date)
                 }
             }
+            .saveDocumentBackground()
             .navigationTitle("Edit receipt")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1604,6 +1682,7 @@ private struct LineItemEditSheet: View {
                         .keyboardType(.decimalPad)
                 }
             }
+            .saveDocumentBackground()
             .navigationTitle("Edit item")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1670,13 +1749,13 @@ private struct LineItemReviewCard: View {
 
             if item.eligibility == .needsReview {
                 HStack(spacing: 8) {
-                    ReviewChoiceButton(title: "FSA", tint: .teal) {
+                    ReviewChoiceButton(title: "FSA", tint: SAVETheme.accent) {
                         classify(.fsaEligible)
                     }
-                    ReviewChoiceButton(title: "HSA", tint: .teal) {
+                    ReviewChoiceButton(title: "HSA", tint: SAVETheme.accent) {
                         classify(.hsaEligible)
                     }
-                    ReviewChoiceButton(title: "Tax", tint: .blue) {
+                    ReviewChoiceButton(title: "Tax", tint: SAVETheme.accent) {
                         classify(.scheduleADeductible)
                     }
                     ReviewChoiceButton(title: "Exclude", tint: .secondary) {
@@ -1691,13 +1770,13 @@ private struct LineItemReviewCard: View {
     private var tint: Color {
         switch item.eligibility {
         case .fsaEligible, .hsaEligible:
-            return .teal
+            return SAVETheme.success
         case .scheduleADeductible:
-            return .blue
+            return SAVETheme.accent
         case .notEligible:
             return .secondary
         case .needsReview:
-            return .orange
+            return SAVETheme.warning
         }
     }
 }
@@ -1713,8 +1792,7 @@ private struct ReviewChoiceButton: View {
                 .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
-        .tint(tint)
+        .buttonStyle(SAVECompactButtonStyle(tint: tint))
     }
 }
 
@@ -1724,18 +1802,19 @@ private struct AssistantMetricCard: View {
     let symbol: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             Image(systemName: symbol)
-                .foregroundStyle(.teal)
+                .foregroundStyle(SAVETheme.accent)
             Text(value)
                 .font(.title3.weight(.bold))
+                .foregroundStyle(SAVETheme.ink)
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SAVETheme.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 }
 
@@ -1745,34 +1824,40 @@ private struct AssistantCaseRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Cases Kai is moving")
-                .font(.headline)
+            SAVESectionTitle(title: "Claims")
 
-            ForEach(claimPackets) { packet in
-                Button {
-                    openPacket(packet)
-                } label: {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(packet.administratorName)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            Text("\(packet.submissionMode.rawValue) - \(packet.status.rawValue)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                ForEach(claimPackets) { packet in
+                    Button {
+                        openPacket(packet)
+                    } label: {
+                        HStack(spacing: 12) {
+                            SAVEIconBadge(symbol: "doc.text.fill", size: 36)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(packet.administratorName)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(SAVETheme.ink)
+                                Text("\(packet.submissionMode.rawValue) - \(packet.status.rawValue)")
+                                    .font(.caption)
+                                    .foregroundStyle(SAVETheme.muted)
+                            }
+
+                            Spacer()
+
+                            Text(packet.total.currency)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(SAVETheme.ink)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(SAVETheme.muted)
                         }
-
-                        Spacer()
-
-                        Text(packet.total.currency)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.primary)
+                        .padding(.vertical, 12)
                     }
+                    .buttonStyle(.plain)
+                    SAVELedgerDivider()
                 }
-                .buttonStyle(.plain)
-                .padding(14)
-                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
+            .saveSolidSurface(padding: 14)
         }
     }
 }
@@ -1800,6 +1885,7 @@ private struct ClaimPacketDetailSheet: View {
                     LabeledContent("Mode", value: packet.submissionMode.rawValue)
                     LabeledContent("Status", value: packet.status.rawValue)
                     LabeledContent("Total", value: packet.total.currency)
+                    ClaimProgressRail(status: packet.status)
                 }
 
                 Section("Administrator template") {
@@ -1823,7 +1909,7 @@ private struct ClaimPacketDetailSheet: View {
                     ForEach(packet.lineItems) { item in
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: item.eligibility.symbolName)
-                                .foregroundStyle(.teal)
+                                .foregroundStyle(SAVETheme.success)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(item.name)
                                     .font(.subheadline.weight(.semibold))
@@ -1840,20 +1926,20 @@ private struct ClaimPacketDetailSheet: View {
                 }
 
                 Section("Claim packet PDF") {
-                    Text(document.text)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                    ClaimDocumentPreview(packet: packet, version: document.template.version)
 
                     if let pdfURL {
                         ShareLink(item: pdfURL) {
-                            Label("Share PDF", systemImage: "square.and.arrow.up.fill")
+                            Label("Share claim packet", systemImage: "square.and.arrow.up.fill")
                         }
+                        .buttonStyle(SAVEPrimaryButtonStyle())
                     } else {
                         Button {
                             writePDF()
                         } label: {
                             Label("Generate PDF", systemImage: "doc.richtext.fill")
                         }
+                        .buttonStyle(SAVEPrimaryButtonStyle())
                     }
 
                     if let errorMessage {
@@ -1878,8 +1964,9 @@ private struct ClaimPacketDetailSheet: View {
                         Button {
                             submit(packet, currentSubmission)
                         } label: {
-                            Label("Mark submitted by user", systemImage: "paperplane.fill")
+                            Label("Mark submitted", systemImage: "paperplane.fill")
                         }
+                        .buttonStyle(SAVESecondaryButtonStyle())
                     case .submittedByUser:
                         if let submission = packet.submission {
                             LabeledContent("Method", value: submission.method.rawValue)
@@ -1897,6 +1984,7 @@ private struct ClaimPacketDetailSheet: View {
                         } label: {
                             Label("Mark reimbursed", systemImage: "checkmark.circle.fill")
                         }
+                        .buttonStyle(SAVEPrimaryButtonStyle())
                     case .reimbursed:
                         Label("Reimbursement recorded", systemImage: "checkmark.seal.fill")
                             .foregroundStyle(.secondary)
@@ -1906,6 +1994,7 @@ private struct ClaimPacketDetailSheet: View {
                     }
                 }
             }
+            .saveDocumentBackground()
             .navigationTitle("Claim packet")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
@@ -1914,6 +2003,8 @@ private struct ClaimPacketDetailSheet: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("saveClaimPacketSheet")
     }
 
     private var currentSubmission: ClaimSubmission {
@@ -1940,6 +2031,141 @@ private struct ClaimPacketDetailSheet: View {
     }
 }
 
+private struct ClaimProgressRail: View {
+    let status: ClaimStatus
+
+    private let steps = ["Evidence", "Packet", "Submit", "Track"]
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Rectangle()
+                .fill(SAVETheme.hairline)
+                .frame(height: 1)
+                .padding(.horizontal, 34)
+                .offset(y: 14)
+
+            HStack(spacing: 8) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, title in
+                    VStack(spacing: 6) {
+                        Image(systemName: symbol(for: index))
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(tint(for: index))
+                            .frame(width: 28, height: 28)
+                            .background(SAVETheme.surface, in: Circle())
+                            .overlay {
+                                Circle().stroke(tint(for: index).opacity(0.22), lineWidth: 1)
+                            }
+                        Text(title)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(index <= currentStep ? SAVETheme.ink : SAVETheme.muted)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var currentStep: Int {
+        switch status {
+        case .draft:
+            return 0
+        case .ready, .rejected, .needsAction:
+            return 2
+        case .submittedByUser, .submittedInApp:
+            return 3
+        case .reimbursed:
+            return 4
+        }
+    }
+
+    private func symbol(for index: Int) -> String {
+        index < currentStep || status == .reimbursed ? "checkmark" : "circle.fill"
+    }
+
+    private func tint(for index: Int) -> Color {
+        if index < currentStep || status == .reimbursed {
+            return SAVETheme.success
+        }
+        if index == currentStep {
+            return SAVETheme.accent
+        }
+        return SAVETheme.muted
+    }
+}
+
+private struct ClaimDocumentPreview: View {
+    let packet: ClaimPacket
+    let version: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("HSA/FSA reimbursement claim")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(SAVETheme.ink)
+                    Text("Administrator template \(version)")
+                        .font(.caption)
+                        .foregroundStyle(SAVETheme.muted)
+                }
+                Spacer()
+                SAVEIconBadge(symbol: "doc.text.fill", size: 34)
+            }
+
+            SAVELedgerDivider()
+
+            HStack {
+                previewValue("Administrator", packet.administratorName)
+                previewValue("Items", "\(packet.lineItems.count)")
+                previewValue("Total", packet.total.currency)
+            }
+        }
+        .saveSolidSurface(cornerRadius: SAVETheme.controlRadius, padding: 14)
+    }
+
+    private func previewValue(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(SAVETheme.muted)
+                .textCase(.uppercase)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(SAVETheme.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct TaxDocumentPreview: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SAVEIconBadge(symbol: symbol, size: 40)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(SAVETheme.ink)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(SAVETheme.muted)
+            }
+            Spacer()
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(SAVETheme.success)
+        }
+        .saveSolidSurface(cornerRadius: SAVETheme.controlRadius, padding: 14)
+    }
+}
+
 private struct TaxExportDetailSheet: View {
     let export: TaxExport
     @State private var csvURL: URL?
@@ -1960,26 +2186,32 @@ private struct TaxExportDetailSheet: View {
                 }
 
                 Section("CSV") {
-                    Text(document.csvText)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                    TaxDocumentPreview(
+                        title: "Medical expense data",
+                        subtitle: "\(export.rows.count) itemized rows",
+                        symbol: "tablecells.fill"
+                    )
 
                     if let csvURL {
                         ShareLink(item: csvURL) {
                             Label("Share CSV", systemImage: "tablecells.fill")
                         }
+                        .buttonStyle(SAVESecondaryButtonStyle())
                     }
                 }
 
                 Section("PDF report") {
-                    Text(document.reportText)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                    TaxDocumentPreview(
+                        title: "Schedule A medical report",
+                        subtitle: export.totalMedicalExpenses.currency,
+                        symbol: "doc.richtext.fill"
+                    )
 
                     if let pdfURL {
                         ShareLink(item: pdfURL) {
                             Label("Share PDF", systemImage: "square.and.arrow.up.fill")
                         }
+                        .buttonStyle(SAVEPrimaryButtonStyle())
                     }
                 }
 
@@ -1991,6 +2223,7 @@ private struct TaxExportDetailSheet: View {
                     }
                 }
             }
+            .saveDocumentBackground()
             .navigationTitle("Tax export")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
@@ -1999,6 +2232,8 @@ private struct TaxExportDetailSheet: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("saveTaxExportSheet")
     }
 
     private func writeFiles() {
@@ -2035,16 +2270,11 @@ private struct AssistantSourceButton: View {
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .foregroundStyle(isConnected ? .teal : .secondary)
-                .background((isConnected ? Color.teal : Color.secondary).opacity(0.12), in: Capsule())
+                .foregroundStyle(isConnected ? SAVETheme.accent : SAVETheme.muted)
+                .background((isConnected ? SAVETheme.accent : SAVETheme.muted).opacity(0.10), in: Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(isConnected)
     }
-}
-
-private enum AssistantTheme {
-    static let background = Color(.systemGroupedBackground)
 }
 
 #Preview {
